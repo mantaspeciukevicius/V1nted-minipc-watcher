@@ -1,0 +1,10 @@
+.git
+.env*
+!.env.example
+data
+backups
+logs
+.codex-attachments
+**/__pycache__
+**/*.pyc
+config/direct-authorization.json

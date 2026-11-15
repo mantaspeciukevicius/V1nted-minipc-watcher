@@ -1,0 +1,23 @@
+# Credentials, including editor backups
+.env*
+!.env.example
+*.pem
+*.key
+# Local runtime and evidence
+data/
+backups/
+logs/
+config/direct-authorization.json
+.codex-attachments/
+__pycache__/
+*.py[cod]
+.pytest_cache/
+.venv/
+*.sqlite
+*.sqlite-*
+*.sqlite3
+*.db
+*.log
+*.swp
+*.swo
+*~

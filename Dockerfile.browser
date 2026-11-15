@@ -1,0 +1,9 @@
+FROM python:3.13-slim
+RUN apt-get update && apt-get install -y --no-install-recommends chromium xvfb xauth fonts-liberation && rm -rf /var/lib/apt/lists/*
+RUN pip install --no-cache-dir playwright==1.64.1
+ENV PYTHONDONTWRITEBYTECODE=1 PYTHONUNBUFFERED=1 HOME=/tmp/browser-home BROWSER_EXECUTABLE=/usr/bin/chromium
+WORKDIR /app
+COPY app/ /app/
+COPY tests/ /tests/
+USER 1000:1000
+CMD ["xvfb-run", "-a", "python", "monitor.py", "daemon"]

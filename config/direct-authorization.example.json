@@ -1,0 +1,6 @@
+{
+  "authorized_by": "REPLACE_WITH_AUTHORIZED_PERSON",
+  "statement": "Record the explicit authorization covering this browser access before enabling it",
+  "recorded_at": "REPLACE_WITH_ISO_TIMESTAMP",
+  "scope": "Public browser searches for mini PCs, hourly, only where authorized; no session import or access-control bypass"
+}

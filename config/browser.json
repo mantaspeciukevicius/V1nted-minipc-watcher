@@ -1,0 +1,21 @@
+{
+  "markets": [
+    "lt",
+    "pl",
+    "de",
+    "fr",
+    "nl",
+    "lv",
+    "it",
+    "es",
+    "cz"
+  ],
+  "queries": [
+    "N100",
+    "N97",
+    "N150"
+  ],
+  "max_details": 12,
+  "pause_seconds": 3,
+  "run_timeout_seconds": 480
+}
