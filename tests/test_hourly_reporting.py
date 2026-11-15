@@ -91,3 +91,15 @@ class HourlyReportingTests(unittest.TestCase):
         at=datetime(2026,11,14,13,1,tzinfo=timezone.utc)
         with patch.object(m,'check') as check:
             m.recover_hourly_gap(self.c,at-timedelta(minutes=1),at); check.assert_not_called()
+
+    def test_half_hourly_schedule_and_recovery(self):
+        with patch.dict(os.environ, {'SCHEDULE':'half_hourly'}):
+            self.assertEqual(len(m.slots()),48)
+            at=datetime(2026,11,15,12,12,tzinfo=timezone.utc)
+            self.assertEqual(m.next_run(at).minute,30)
+            self.assertEqual(m.next_run(at.replace(minute=30)).minute,0)
+            with patch.object(m,'check',return_value={'run_id':'recovery'}) as check:
+                m.recover_hourly_gap(self.c,at,at+timedelta(hours=2))
+                check.assert_called_once_with('recovery')
+            recovery=json.loads(self.c.execute("SELECT value FROM app_settings WHERE key='last_schedule_recovery'").fetchone()[0])
+            self.assertEqual(recovery['missed_checks'],4)

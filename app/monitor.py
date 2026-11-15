@@ -17,6 +17,7 @@ def zone(): return ZoneInfo(os.getenv('TIMEZONE','Europe/Vilnius'))
 def slots():
     value=os.getenv('SCHEDULE','hourly').strip()
     if value.lower()=='hourly': return [f'{h:02d}:00' for h in range(24)]
+    if value.lower()=='half_hourly': return [f'{h:02d}:{minute:02d}' for h in range(24) for minute in (0,30)]
     result=sorted(set(v.strip() for v in value.split(',')))
     for value in result:
         datetime.strptime(value,'%H:%M')
@@ -396,7 +397,7 @@ def status(c):
     return dict(database_health=c.execute('PRAGMA quick_check').fetchone()[0],next_scheduled=next_run().isoformat(),last_scheduled=dict(r) if (r:=c.execute("SELECT id,started,completed,outcome,slot FROM search_runs WHERE kind='scheduled' ORDER BY started DESC LIMIT 1").fetchone()) else None,last_run=dict(r) if (r:=c.execute('SELECT id,started,completed,outcome FROM search_runs ORDER BY started DESC LIMIT 1').fetchone()) else None,sources=[dict(r) for r in c.execute('SELECT * FROM source_health')],last_telegram_report=dict(r) if (r:=c.execute("SELECT id FROM outbox WHERE state='DELIVERED' ORDER BY rowid DESC LIMIT 1").fetchone()) else None,outbox=[dict(r) for r in c.execute('SELECT id,state,attempts,error FROM outbox WHERE state="PENDING"')],notification_mode=os.getenv('NOTIFY_MODE','deals_and_daily'),telegram_enabled=envbool('ENABLE_TELEGRAM'),next_daily_report=next_daily_report().isoformat(),confirmed_deals=sum(confirmed(r) for r in matches),unverified_candidates=sum(r['classification']!='REJECTED' and not confirmed(r) and r['availability'] not in DEAD for r in matches),monitoring=not (ROOT/'disabled').exists(),heartbeat=(ROOT/'heartbeat').read_text() if (ROOT/'heartbeat').exists() else None)
 
 def recover_hourly_gap(c,cursor,at):
-    if os.getenv('SCHEDULE','hourly').lower()!='hourly': return cursor
+    if os.getenv('SCHEDULE','hourly').lower() not in ('hourly','half_hourly'): return cursor
     first=next_run(cursor)
     if first.astimezone(UTC)>at: return cursor
     following=next_run(first.astimezone(UTC))
@@ -404,7 +405,7 @@ def recover_hourly_gap(c,cursor,at):
     count=0; slot=first
     while slot.astimezone(UTC)<=at:
         count+=1; last=slot; slot=next_run(slot.astimezone(UTC))
-    recovery={'from':cursor.isoformat(),'to':at.isoformat(),'missed_checks':count,'first_slot':first.isoformat(),'last_slot':last.isoformat(),'policy':'One fresh recovery check; missed hourly browser checks are not replayed individually'}
+    recovery={'from':cursor.isoformat(),'to':at.isoformat(),'missed_checks':count,'first_slot':first.isoformat(),'last_slot':last.isoformat(),'policy':'One fresh recovery check; missed scheduled browser checks are not replayed individually'}
     with c: c.execute("INSERT OR REPLACE INTO app_settings VALUES('last_schedule_recovery',?)",(json.dumps(recovery),))
     # Catch up at most the latest missed daily summary, then one fresh scan.
     summary=next_daily_report(cursor); latest=None
@@ -423,7 +424,7 @@ def daemon():
     leader=(ROOT/'scheduler.lock').open('a'); fcntl.flock(leader,fcntl.LOCK_EX|fcntl.LOCK_NB)
     c=db(); previous=c.execute("SELECT value FROM app_settings WHERE key='scheduler_cursor'").fetchone()
     cursor=datetime.fromisoformat(previous[0]) if previous else datetime.now(UTC)
-    print(json.dumps({'event':'scheduler_start','cursor':cursor.isoformat(),'recovery':'missed hourly checks coalesced; daily reports deduplicated; older gaps recorded'}),flush=True)
+    print(json.dumps({'event':'scheduler_start','cursor':cursor.isoformat(),'recovery':'missed scheduled checks coalesced; daily reports deduplicated; older gaps recorded'}),flush=True)
     if cursor<datetime.now(UTC)-timedelta(days=7):
         c.execute("INSERT OR REPLACE INTO app_settings VALUES('older_missed_gap',?)",(json.dumps({'from':cursor.isoformat(),'to':now()}),)); c.commit(); cursor=datetime.now(UTC)-timedelta(days=7)
     cursor=recover_hourly_gap(c,cursor,datetime.now(UTC))

@@ -43,3 +43,5 @@ The ordinary test suite uses temporary databases and mocked network calls. It ma
 Browser checks cover a bounded first page of newest-first results, not the entire catalogue. Newly discovered means new to this database, not necessarily newly posted. Delivery eligibility is not established merely by a country domain. Unknown RAM, fees, availability and shipping remain unknown. Market-displayed prices may already include currency conversion; their decreases are not automatically confirmed seller price drops.
 
 Runtime credentials, authorization records, databases, browser captures, logs and screenshots are excluded from Git. No software license has been selected for this repository.
+
+Schedule update (2026-11-15): set `SCHEDULE=half_hourly` for checks at :00 and :30 in Europe/Vilnius. Deal alerts and the daily 19:00 summary remain enabled. Missed checks are coalesced on recovery. Test suite: 107 passing tests.
