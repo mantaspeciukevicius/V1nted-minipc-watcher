@@ -178,11 +178,14 @@ def confirmed(r):
     return fresh and r['classification']=='VERIFIED_MATCH' and r['availability']=='AVAILABLE_CONFIRMED' and r['delivery'] in {'DIRECT_LT_CONFIRMED','FORWARDER_CONFIRMED'}
 
 def observe(c,r,run_id):
-    body=json.dumps(r,sort_keys=True); digest=hashlib.sha256(body.encode()).hexdigest()
-    if c.execute('SELECT 1 FROM listing_observations WHERE digest=?',(digest,)).fetchone(): return 'NO_CHANGE',None
     old=c.execute('SELECT * FROM listings WHERE id=?',(r['id'],)).fetchone()
     prev=json.loads(old['current_json']) if old else None
     if prev and datetime.fromisoformat(r['observed_at'])<datetime.fromisoformat(prev['observed_at']): return 'NO_CHANGE',None
+    # Search cards/unknown status cannot revive a confirmed sold/reserved listing.
+    if prev and prev['availability'] in DEAD and r['availability']=='UNKNOWN':
+        r['availability']=prev['availability']
+    body=json.dumps(r,sort_keys=True); digest=hashlib.sha256(body.encode()).hexdigest()
+    if c.execute('SELECT 1 FROM listing_observations WHERE digest=?',(digest,)).fetchone(): return 'NO_CHANGE',None
     event='NO_CHANGE'
     if not prev: event='NEW_VERIFIED_MATCH' if confirmed(r) else 'NEW_UNVERIFIED_CANDIDATE'
     elif confirmed(r) and not confirmed(prev): event='NEW_VERIFIED_MATCH'
@@ -371,9 +374,10 @@ def daily_summary(c,slot):
     last=c.execute("SELECT * FROM search_runs WHERE kind IN ('manual','scheduled','recovery') AND completed<? ORDER BY completed DESC LIMIT 1",(end.isoformat(),)).fetchone()
     sources=json.loads(last['sources']) if last else [{'source':'monitor','state':'UNAVAILABLE','error':'No completed checks before summary'}]
     run_id=str(uuid.uuid4())
-    events=[(r,'CURRENT_CONFIRMED_MATCH' if confirmed(r) else 'CURRENT_UNVERIFIED_CANDIDATE',None) for r in matches[:10]]
+    # A daily status report must not resend already alerted or stale listing details.
+    events=[]
     details,counts,outcome=report(run_id,'daily_summary',sources,matches,events)
-    body='\n'.join([f'DAILY MINI PC REPORT — {slot.astimezone(zone()).isoformat(timespec="minutes")}',f'Window: {start.astimezone(zone()).isoformat()} to {slot.isoformat()}',f'Checks completed: {len(runs)}; partial/failed: {sum(r["outcome"]=="PARTIAL_CHECK" for r in runs)}',f'New candidates: {len(new_ids)}; confirmed seller price drops: {drops}; unverified displayed-price decreases: {display_drops}',f'Current stored candidates: {len(matches)}; fully confirmed: {sum(confirmed(r) for r in matches)}','Stored candidates may be stale; evidence timestamps govern verification.','This summary uses completed checks before 19:00; the 19:00 check runs afterward.','',details])
+    body='\n'.join([f'DAILY MINI PC REPORT — {slot.astimezone(zone()).isoformat(timespec="minutes")}',f'Window: {start.astimezone(zone()).isoformat()} to {slot.isoformat()}',f'Checks completed: {len(runs)}; partial/failed: {sum(r["outcome"]=="PARTIAL_CHECK" for r in runs)}',f'New candidates: {len(new_ids)}; confirmed seller price drops: {drops}; unverified displayed-price decreases: {display_drops}',f'Current stored candidates: {len(matches)}; fully confirmed: {sum(confirmed(r) for r in matches)}','Stored candidate counts may be stale; unchanged listings are not sent again.','This summary uses completed checks before 19:00; the 19:00 check runs afterward.','',details])
     stamp=now()
     with c:
         c.execute('INSERT INTO search_runs VALUES(?,?,?,?,?,?,?,?,?)',(run_id,stamp,stamp,'daily_summary',key,outcome,json.dumps(counts),json.dumps(sources),body))

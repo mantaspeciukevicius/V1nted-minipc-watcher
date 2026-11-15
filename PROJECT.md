@@ -342,3 +342,5 @@ Only application code, tests, safe examples, Docker files and documentation are 
 These links document the implementation's sources and are not a guarantee that terms, tariffs or access permission remain unchanged. Re-check relevant conditions before expanding access or shipping assumptions.
 
 Schedule update (2026-11-15): set `SCHEDULE=half_hourly` for checks at :00 and :30 in Europe/Vilnius. Deal alerts and the daily 19:00 summary remain enabled. Missed checks are coalesced on recovery. Test suite: 107 passing tests.
+
+Alert update (2026-11-15): daily reports show counts without repeating stored listing details. Previously eligible browser candidates are directly rechecked within the existing run budget, even if absent from search. Unknown search-card status cannot revive a confirmed sold/reserved listing. Regression suite: 110 passing tests.

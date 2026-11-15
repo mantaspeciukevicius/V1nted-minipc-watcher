@@ -54,7 +54,7 @@ def listing_section(text,title):
 
 def availability(text,buy_enabled=False):
     # Explicit labels only; no inference from a page merely loading.
-    for pattern,state in [(r'^(sold|parduota|sprzedane|verkauft|vendu|venduto|vendido|verkocht|prodáno)[.!]?$', 'SOLD'),(r'^(reserved|rezervuota|zarezerwowane|reserviert|réservé|gereserveerd|riservato|reservado|rezervováno)[.!]?$', 'RESERVED'),(r'^(purchase in progress|pirkimas vykdomas)$','PURCHASE_IN_PROGRESS')]:
+    for pattern,state in [(r'^(?:(?:item|artikel|articolo|artículo|article|przedmiot|prekė)\s+)?(sold|parduota|sprzedane|verkauft|vendu|venduto|vendido|verkocht|prodáno)(?:\s+(?:item|artikel|articolo|artículo|article))?[.!]?$', 'SOLD'),(r'^(reserved|rezervuota|zarezerwowane|reserviert|réservé|gereserveerd|riservato|reservado|rezervováno)[.!]?$', 'RESERVED'),(r'^(purchase in progress|pirkimas vykdomas)$','PURCHASE_IN_PROGRESS')]:
         if any(re.match(pattern,line.strip(),re.I) for line in text.splitlines()): return state
     return 'AVAILABLE_CONFIRMED' if buy_enabled else 'UNKNOWN'
 
@@ -121,10 +121,44 @@ def collect(root,normalize,c,config_dir=Path('/config')):
             return None
         save(page,name,text)
         return text
+    def read_detail(page,raw,record,text):
+        h1=page.locator('h1'); title=h1.first.inner_text() if h1.count() else raw['title']
+        description=''
+        for selector in ('[class*="item-description__text"]','[class*="item-description"]','[data-testid="item-description"]','[data-testid="item-description-text"]','[itemprop="description"]'):
+            loc=page.locator(selector)
+            if loc.count(): description=loc.first.inner_text(); break
+        if not description: description=listing_section(text,title)
+        price,currency=None,None
+        for selector in ('[data-testid="item-price"]','[data-testid="item-price-text"]','[itemprop="price"]'):
+            loc=page.locator(selector)
+            if loc.count(): price,currency=price_from_text(loc.first.inner_text())
+            if price is not None: break
+        # Do not read the whole page as specs or price: related products can contaminate it.
+        buy=page.get_by_role('button',name=re.compile(r'^(Buy now|Pirkti|Kup teraz|Acheter|Kaufen|Comprar|Acquista|Kopen|Koupit)$',re.I))
+        buy_enabled=any(buy.nth(i).is_visible() and buy.nth(i).is_enabled() for i in range(buy.count()))
+        state=availability(text,buy_enabled)
+        raw.update(title=title,description=description,availability=state,availability_evidence='Rendered enabled purchase button' if buy_enabled else 'Rendered explicit state label',details_confirmed=True,evidence_source=raw['url']+' (rendered listing details)')
+        if price is not None: raw.update(price=price,currency=currency)
+        detail=normalize(c,raw,'authorized_browser_detail')
+        return detail
     with display(), sync_playwright() as p:
         browser=p.chromium.launch(headless=False,executable_path=__import__('os').getenv('BROWSER_EXECUTABLE'))
         page=browser.new_page()
         try:
+            # Recheck previously eligible candidates even when absent from search.
+            # Share the existing detail/time budget; never infer sold from absence.
+            tracked=[json.loads(row[0]) for row in c.execute('SELECT current_json FROM listings ORDER BY last_seen ASC')]
+            for record in tracked:
+                if record['classification']=='REJECTED' or record['availability'] in {'SOLD','RESERVED','PURCHASE_IN_PROGRESS','REMOVED'}: continue
+                if not record['source'].startswith('authorized_browser'): continue
+                if detail_count>=cfg['max_details'] or time.monotonic()-started>cfg['run_timeout_seconds']: break
+                time.sleep(cfg['pause_seconds']); detail_count+=1
+                text=navigate(page,record['url'],'item-'+record['id'].split(':')[1])
+                if text is None: return records,statuses
+                raw={'url':record['url'],'title':record['title'],'country':record['country'],'currency':record['currency'],'price':None}
+                detail=read_detail(page,raw,record,text)
+                records.append(detail); seen.add(record['id'].split(':')[1])
+                statuses.append({'source':'authorized_browser_recheck','state':'AUTHORIZED_BROWSER_CHECK','count':1,'query':record['url'],'evidence':str(evidence)})
             for market in cfg['markets']:
                 for query in cfg['queries']:
                     if time.monotonic()-started>cfg['run_timeout_seconds']:
@@ -161,24 +195,7 @@ def collect(root,normalize,c,config_dir=Path('/config')):
                         time.sleep(cfg['pause_seconds']); detail_count+=1
                         text=navigate(page,raw['url'],'item-'+record['id'].split(':')[1])
                         if text is None: return records,statuses
-                        h1=page.locator('h1'); title=h1.first.inner_text() if h1.count() else raw['title']
-                        description=''
-                        for selector in ('[class*="item-description__text"]','[class*="item-description"]','[data-testid="item-description"]','[data-testid="item-description-text"]','[itemprop="description"]'):
-                            loc=page.locator(selector)
-                            if loc.count(): description=loc.first.inner_text(); break
-                        if not description: description=listing_section(text,title)
-                        price,currency=None,None
-                        for selector in ('[data-testid="item-price"]','[data-testid="item-price-text"]','[itemprop="price"]'):
-                            loc=page.locator(selector)
-                            if loc.count(): price,currency=price_from_text(loc.first.inner_text())
-                            if price is not None: break
-                        # Do not read the whole page as specs or price: related products can contaminate it.
-                        buy=page.get_by_role('button',name=re.compile(r'^(Buy now|Pirkti|Kup teraz|Acheter|Kaufen|Comprar|Acquista|Kopen|Koupit)$',re.I))
-                        buy_enabled=any(buy.nth(i).is_visible() and buy.nth(i).is_enabled() for i in range(buy.count()))
-                        state=availability(text,buy_enabled)
-                        raw.update(title=title,description=description,availability=state,availability_evidence='Rendered enabled purchase button' if buy_enabled else 'Rendered explicit state label',details_confirmed=True,evidence_source=raw['url']+' (rendered listing details)')
-                        if price is not None: raw.update(price=price,currency=currency)
-                        detail=normalize(c,raw,'authorized_browser_detail')
+                        detail=read_detail(page,raw,record,text)
                         records[records.index(record)]=detail
                     time.sleep(cfg['pause_seconds'])
         except Exception as e:

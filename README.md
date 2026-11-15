@@ -45,3 +45,5 @@ Browser checks cover a bounded first page of newest-first results, not the entir
 Runtime credentials, authorization records, databases, browser captures, logs and screenshots are excluded from Git. No software license has been selected for this repository.
 
 Schedule update (2026-11-15): set `SCHEDULE=half_hourly` for checks at :00 and :30 in Europe/Vilnius. Deal alerts and the daily 19:00 summary remain enabled. Missed checks are coalesced on recovery. Test suite: 107 passing tests.
+
+Alert update (2026-11-15): daily reports show counts without repeating stored listing details. Previously eligible browser candidates are directly rechecked within the existing run budget, even if absent from search. Unknown search-card status cannot revive a confirmed sold/reserved listing. Regression suite: 110 passing tests.

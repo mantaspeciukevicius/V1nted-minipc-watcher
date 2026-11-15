@@ -103,3 +103,17 @@ class HourlyReportingTests(unittest.TestCase):
                 check.assert_called_once_with('recovery')
             recovery=json.loads(self.c.execute("SELECT value FROM app_settings WHERE key='last_schedule_recovery'").fetchone()[0])
             self.assertEqual(recovery['missed_checks'],4)
+
+    def test_daily_summary_does_not_repeat_alerted_listing(self):
+        with self.sources([self.row()]): m.check('scheduled','first')
+        m.daily_summary(self.c,datetime.now(m.zone()).replace(hour=19,minute=0,second=0,microsecond=0))
+        body=self.c.execute('SELECT body FROM outbox ORDER BY rowid DESC').fetchone()[0]
+        self.assertNotIn('https://vinted.lt/items/123-fixture',body)
+        self.assertNotIn('CURRENT_UNVERIFIED_CANDIDATE:',body)
+
+    def test_sold_cannot_be_revived_by_unknown_card(self):
+        r=self.row(); r['availability']='SOLD'; m.observe(self.c,r,'sold')
+        card=dict(r,availability='UNKNOWN',source='authorized_browser_card',observed_at=(datetime.now(timezone.utc)+timedelta(seconds=1)).isoformat())
+        self.assertEqual(m.observe(self.c,card,'card')[0],'NO_CHANGE')
+        stored=json.loads(self.c.execute('SELECT current_json FROM listings').fetchone()[0])
+        self.assertEqual(stored['availability'],'SOLD')

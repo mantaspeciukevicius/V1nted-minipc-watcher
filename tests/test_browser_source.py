@@ -68,3 +68,6 @@ class BrowserTests(unittest.TestCase):
     def test_pc_portable_is_laptop(self):
         from browser_source import candidate_hint
         self.assertFalse(candidate_hint('PC portable Lenovo 3000 N100'))
+
+    def test_german_sold_item_label(self):
+        self.assertEqual(availability('Artikel verkauft\nMini PC',True),'SOLD')
