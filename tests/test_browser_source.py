@@ -71,3 +71,8 @@ class BrowserTests(unittest.TestCase):
 
     def test_german_sold_item_label(self):
         self.assertEqual(availability('Artikel verkauft\nMini PC',True),'SOLD')
+
+    def test_buyer_market_overrides_foreign_catalogue_config(self):
+        with tempfile.TemporaryDirectory() as d,patch.dict(os.environ,{'BUYER_MARKET':'LT'}):
+            p=Path(d)/'config.json';p.write_text(json.dumps({'markets':['de','pl']}))
+            self.assertEqual(source_config(p)['markets'],['lt'])

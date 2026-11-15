@@ -102,7 +102,7 @@ class MonitorTests(unittest.TestCase):
         hit={'web':{'results':[{'url':'https://vinted.pl/items/789-test','title':'Mini PC N150 16GB','description':'Indexed lead'}]}}
         with patch.dict(os.environ,{'BRAVE_API_KEY':'fixture','BRAVE_STORAGE_LICENSE_CONFIRMED':'true'}),patch.object(m,'QUERIES',['N150']),patch.object(m,'request_json',return_value=hit),patch.object(m.time,'sleep'):
             records,states,_=m.sources(self.c)
-        self.assertEqual(len(records),9); self.assertTrue(all(r['availability']=='UNKNOWN' for r in records))
+        self.assertEqual(len(records),5); self.assertTrue(all(r['availability']=='UNKNOWN' for r in records))
     def test_telegram_success_and_restart(self):
         self.c.execute("INSERT INTO search_runs(id) VALUES('x')")
         self.c.execute("INSERT INTO outbox(id,body,state) VALUES('x','report','PENDING')"); self.c.commit()

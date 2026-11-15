@@ -1,0 +1,15 @@
+{
+  "verified_on": "2026-11-15",
+  "buyer_market": "LT",
+  "connected_markets": [
+    "LT",
+    "LV",
+    "EE",
+    "PL",
+    "FI"
+  ],
+  "finland_scope": "Mainland only; Aland integrated shipping excluded",
+  "source": "https://www.vinted.lt/help/313/234-siuntimo-budai",
+  "search_policy": "Lithuanian public catalogue only; other-country catalogues are not proxies for Lithuanian account access",
+  "delivery_policy": "UNKNOWN until item/address-specific checkout evidence; no forwarding or account-country switching assumed"
+}

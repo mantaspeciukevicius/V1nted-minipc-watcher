@@ -13,7 +13,7 @@ from datetime import datetime, timezone
 from pathlib import Path
 from urllib.parse import urlencode, urlsplit
 
-MARKETS=('lt','pl','de','fr','nl','lv','it','es','cz')
+MARKETS=('lt','pl','fi','ee','de','fr','nl','lv','it','es','cz')
 BLOCK_TEXT=re.compile(r'verify (?:that )?you are human|checking your browser|access denied|unusual (?:traffic|activity)|captcha|patvirtinkite.{0,30}(?:žmogus|robot)|too many requests|request (?:was )?blocked|you have been blocked',re.I)
 
 def access_problem(status,text,url):
@@ -61,6 +61,7 @@ def availability(text,buy_enabled=False):
 def source_config(path):
     defaults={'markets':['lt'],'queries':['N100','N97','N150'],'max_details':12,'pause_seconds':3,'run_timeout_seconds':480}
     if path.exists(): defaults.update(json.loads(path.read_text()))
+    if os.getenv('BUYER_MARKET'): defaults['markets']=[os.environ['BUYER_MARKET'].lower()]
     if not defaults['markets'] or any(m not in MARKETS for m in defaults['markets']): raise ValueError('Unsupported browser market')
     if not 1<=len(defaults['queries'])<=12: raise ValueError('Use 1–12 browser queries')
     if not 0<=int(defaults['max_details'])<=30: raise ValueError('max_details must be between 0 and 30')
@@ -151,6 +152,7 @@ def collect(root,normalize,c,config_dir=Path('/config')):
             for record in tracked:
                 if record['classification']=='REJECTED' or record['availability'] in {'SOLD','RESERVED','PURCHASE_IN_PROGRESS','REMOVED'}: continue
                 if not record['source'].startswith('authorized_browser'): continue
+                if os.getenv('BUYER_MARKET') and (urlsplit(record['url']).hostname or '').removeprefix('www.')!='vinted.'+os.environ['BUYER_MARKET'].lower(): continue
                 if detail_count>=cfg['max_details'] or time.monotonic()-started>cfg['run_timeout_seconds']: break
                 time.sleep(cfg['pause_seconds']); detail_count+=1
                 text=navigate(page,record['url'],'item-'+record['id'].split(':')[1])

@@ -1,14 +1,6 @@
 {
   "markets": [
-    "lt",
-    "pl",
-    "de",
-    "fr",
-    "nl",
-    "lv",
-    "it",
-    "es",
-    "cz"
+    "lt"
   ],
   "queries": [
     "N100",

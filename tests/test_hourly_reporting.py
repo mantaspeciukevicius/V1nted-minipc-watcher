@@ -117,3 +117,25 @@ class HourlyReportingTests(unittest.TestCase):
         self.assertEqual(m.observe(self.c,card,'card')[0],'NO_CHANGE')
         stored=json.loads(self.c.execute('SELECT current_json FROM listings').fetchone()[0])
         self.assertEqual(stored['availability'],'SOLD')
+
+    def test_lithuanian_scope_suppresses_foreign_catalogue_alert(self):
+        r=self.row();r.update(source='authorized_browser_detail',url='https://www.vinted.de/items/123-fixture',country='DE')
+        with patch.dict(os.environ,{'BUYER_MARKET':'LT'}),self.sources([r]):
+            m.check('scheduled','foreign')
+            self.assertEqual(self.states(),['LOCAL_ONLY'])
+            self.assertEqual(m.status(self.c)['unverified_candidates'],0)
+
+    def test_known_outside_seller_excluded_even_on_lt_domain(self):
+        r=self.row();r.update(source='authorized_browser_detail',seller_country='DE')
+        with patch.dict(os.environ,{'BUYER_MARKET':'LT'}): self.assertFalse(m.in_buyer_scope(r))
+
+    def test_connected_manual_countries_and_unknown_shipping(self):
+        with patch.dict(os.environ,{'BUYER_MARKET':'LT'}):
+            for country in ['LT','PL','LV','EE','FI']:
+                r=self.row();r['country']=country
+                self.assertTrue(m.in_buyer_scope(r))
+                self.assertFalse(m.confirmed(r))
+
+    def test_estonian_listing_url_supported(self):
+        r=m.normalize(self.c,{'url':'https://www.vinted.ee/items/999-fixture','title':'Mini PC N100 16 GB'},'manual_import')
+        self.assertEqual(r['country'],'EE')

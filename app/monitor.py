@@ -120,7 +120,7 @@ DEAD={'SOLD','RESERVED','PURCHASE_IN_PROGRESS','REMOVED'}
 
 def normalize(c,r,source):
     u=urlsplit(r.get('url',''))
-    if u.scheme!='https' or not re.fullmatch(r'(?:www\.)?vinted\.(?:lt|pl|de|fr|nl|lv|it|es|cz|com|co.uk|be|at|pt|fi|se|dk)',u.hostname or ''): raise ValueError('expected direct HTTPS Vinted listing URL')
+    if u.scheme!='https' or not re.fullmatch(r'(?:www\.)?vinted\.(?:lt|pl|de|fr|nl|lv|ee|it|es|cz|com|co.uk|be|at|pt|fi|se|dk)',u.hostname or ''): raise ValueError('expected direct HTTPS Vinted listing URL')
     match=re.match(r'/items/(\d+)(?:-|/|$)',u.path)
     if not match: raise ValueError('URL lacks numeric listing identity')
     ident='vinted:'+match[1]
@@ -171,11 +171,23 @@ def normalize(c,r,source):
     if complete:
         for threshold in map(float,os.getenv('PRIORITY_THRESHOLDS','75,100,125,150,175').split(',')):
             if total<threshold: tier=f'Below EUR {threshold:g} (estimate)'; break
-    return dict(id=ident,url=f'https://{u.hostname}{u.path}',country=r.get('country',u.hostname.split('.')[-1].upper()),title=title,description=description,cpu=cpu,ram_gb=ram,classification=cls,availability=availability,delivery=delivery,price=amount,currency=currency,asking_eur=converted,fx=fx,costs=components,delivered_eur=total,cost_complete=complete,tier=tier,risks=risks,source=source,evidence_source=r.get('evidence_source',source),observed_at=stamp,details_confirmed=bool(trusted),price_basis='MARKET_DISPLAY' if source.startswith('authorized_browser') else 'SELLER_SUPPLIED',condition=r.get('condition','UNKNOWN'),model=r.get('model'),manufacturer=r.get('manufacturer'),storage=r.get('storage','UNKNOWN'),power_adapter=r.get('power_adapter','UNKNOWN'))
+    return dict(id=ident,url=f'https://{u.hostname}{u.path}',country=r.get('country',u.hostname.split('.')[-1].upper()),title=title,description=description,cpu=cpu,ram_gb=ram,classification=cls,availability=availability,delivery=delivery,price=amount,currency=currency,asking_eur=converted,fx=fx,costs=components,delivered_eur=total,cost_complete=complete,tier=tier,risks=risks,source=source,evidence_source=r.get('evidence_source',source),observed_at=stamp,details_confirmed=bool(trusted),price_basis='MARKET_DISPLAY' if source.startswith('authorized_browser') else 'SELLER_SUPPLIED',seller_country=r.get('seller_country'),condition=r.get('condition','UNKNOWN'),model=r.get('model'),manufacturer=r.get('manufacturer'),storage=r.get('storage','UNKNOWN'),power_adapter=r.get('power_adapter','UNKNOWN'))
+
+def in_buyer_scope(r):
+    buyer=os.getenv('BUYER_MARKET','').strip().upper()
+    if not buyer: return True
+    allowed={v.strip().upper() for v in os.getenv('ALLOWED_SELLER_COUNTRIES','LT,PL,FI,LV,EE').split(',')}
+    seller=r.get('seller_country') or (r.get('country') if r['source']=='manual_import' else None)
+    if seller and seller.upper() not in allowed: return False
+    # Foreign public catalogues expose routes unavailable to the Lithuanian account.
+    # A source-domain country is NOT proof of the seller's physical location.
+    if r['source']!='manual_import':
+        return (urlsplit(r['url']).hostname or '').removeprefix('www.')=='vinted.'+buyer.lower()
+    return True
 
 def confirmed(r):
     fresh=(datetime.now(UTC)-datetime.fromisoformat(r['observed_at'])).total_seconds()<int(os.getenv('VERIFICATION_TTL_HOURS','24'))*3600
-    return fresh and r['classification']=='VERIFIED_MATCH' and r['availability']=='AVAILABLE_CONFIRMED' and r['delivery'] in {'DIRECT_LT_CONFIRMED','FORWARDER_CONFIRMED'}
+    return in_buyer_scope(r) and fresh and r['classification']=='VERIFIED_MATCH' and r['availability']=='AVAILABLE_CONFIRMED' and r['delivery'] in {'DIRECT_LT_CONFIRMED','FORWARDER_CONFIRMED'}
 
 def observe(c,r,run_id):
     old=c.execute('SELECT * FROM listings WHERE id=?',(r['id'],)).fetchone()
@@ -199,7 +211,7 @@ def observe(c,r,run_id):
     if not prev or prev['availability']!=r['availability']: c.execute('INSERT INTO availability_history(listing_id,observed_at,state) VALUES(?,?,?)',(r['id'],r['observed_at'],r['availability']))
     c.execute('INSERT INTO shipping_estimates VALUES(?,?,?)',(r['id'],r['observed_at'],json.dumps(r['costs'])))
     eid=hashlib.sha256((r['id']+digest+event).encode()).hexdigest()
-    eligible=r['classification']!='REJECTED' and r['availability'] not in DEAD
+    eligible=in_buyer_scope(r) and r['classification']!='REJECTED' and r['availability'] not in DEAD
     if event!='NO_CHANGE' and eligible:
         c.execute('INSERT OR IGNORE INTO alerts_sent VALUES(?,?,?,?,NULL)',(eid,r['id'],event,run_id))
         return event,prev
@@ -237,7 +249,7 @@ def sources(c):
     else:
         cfg=Path('/config/search.json')
         queries=json.loads(cfg.read_text()).get('queries',QUERIES) if cfg.exists() else QUERIES
-        domains=['lt','pl','de','fr','nl','lv','it','es','cz']
+        domains=[os.environ['BUYER_MARKET'].lower()] if os.getenv('BUYER_MARKET') else ['lt','pl','fi','lv','ee']
         for domain in domains:
             for query in queries:
                 q=f'site:vinted.{domain}/items/ {query}'
@@ -275,6 +287,8 @@ def report(run_id,kind,statuses,records,events):
     states={s['state'] for s in statuses}
     outcome='PARTIAL_CHECK' if states & {'UNAVAILABLE','PARSING_FAILURE','RATE_LIMIT','ACCESS_BLOCKED','SEARCH_PROVIDER_FAILURE','LOGIN_REQUIRED','PARTIAL_CHECK','SOURCE_UNAVAILABLE'} else 'AUTHORIZED_BROWSER_CHECK' if 'AUTHORIZED_BROWSER_CHECK' in states else 'NO_USABLE_RESULTS' if 'NO_USABLE_RESULTS' in states else 'INDEXED_DISCOVERY_ONLY' if 'INDEXED_DISCOVERY_ONLY' in states else 'MANUAL_IMPORT'
     lines=[f'Vinted check — {datetime.now(zone()).isoformat(timespec="minutes")}',f'Run: {run_id} ({kind})',f'Outcome: {outcome}',f'Observed unique listings: {len(records)}; accepted specs: {counts["VERIFIED_MATCH"]}; likely: {counts["LIKELY_MATCH_UNVERIFIED"]}; manual review: {counts["NEEDS_MANUAL_REVIEW"]}; rejected: {counts["REJECTED"]}',f'Fully confirmed this run: {sum(confirmed(r) for r in records)}', ('Authorized public-browser access enabled; delivery unverified. Full live catalogue NOT searched.' if envbool('ENABLE_AUTHORIZED_DIRECT_CHECKS') else 'Direct Vinted verification: disabled. Full live catalogue NOT searched.')]
+    if os.getenv('BUYER_MARKET'):
+        lines.append('Buyer market: '+os.environ['BUYER_MARKET']+'; connected seller markets: '+os.getenv('ALLOWED_SELLER_COUNTRIES','LT,PL,FI,LV,EE')+' (mainland Finland). Delivery requires checkout verification.')
     groups={}
     for status in statuses:
         key=(status['source'],status['state']); group=groups.setdefault(key,{'count':0,'errors':set()})
@@ -287,7 +301,7 @@ def report(run_id,kind,statuses,records,events):
         group=[(r,e,p) for r,e,p in events if confirmed(r)==section]
         if group: lines.append('\nCONFIRMED DEALS' if section else '\nUNVERIFIED CANDIDATES / EVENTS')
         for r,e,p in sorted(group,key=lambda x:(not x[0]['cost_complete'],x[0]['delivered_eur'] if x[0]['delivered_eur'] is not None else float('inf'))):
-            lines += [f'{e}: {r["title"]}',f'{r["cpu"] or "CPU UNKNOWN"} / RAM {r["ram_gb"] or "UNKNOWN"} GB; {r["country"]}; {r["condition"]}',f'Asking: '+(f'EUR {r["asking_eur"]:.2f}' if r['asking_eur'] is not None else 'EUR UNKNOWN (conversion/price missing)'),f'Availability: {r["availability"]}; delivery: {r["delivery"]}']
+            lines += [f'{e}: {r["title"]}',f'{r["cpu"] or "CPU UNKNOWN"} / RAM {r["ram_gb"] or "UNKNOWN"} GB; source market {r["country"]}; {r["condition"]}',f'Asking: '+(f'EUR {r["asking_eur"]:.2f}' if r['asking_eur'] is not None else 'EUR UNKNOWN (conversion/price missing)'),f'Availability: {r["availability"]}; delivery: {r["delivery"]}']
             if r.get('price_basis')=='MARKET_DISPLAY': lines.append('Price shown by Vinted in this market; original seller currency unverified. FX changes may affect it.')
             if e=='DISPLAY_PRICE_DECREASE_UNVERIFIED': lines.append('Displayed price decreased; seller price reduction NOT established (currency conversion may have changed).')
             if e=='PRICE_DROP' and p:
@@ -369,7 +383,7 @@ def daily_summary(c,slot):
     drops=sum(r['event']=='PRICE_DROP' for r in alerts)
     display_drops=sum(r['event']=='DISPLAY_PRICE_DECREASE_UNVERIFIED' for r in alerts)
     matches=[json.loads(r[0]) for r in c.execute('SELECT current_json FROM listings')]
-    matches=[r for r in matches if r['classification']!='REJECTED' and r['availability'] not in DEAD]
+    matches=[r for r in matches if in_buyer_scope(r) and r['classification']!='REJECTED' and r['availability'] not in DEAD]
     matches.sort(key=lambda r:(not confirmed(r),not r['cost_complete'],r['delivered_eur'] if r['delivered_eur'] is not None else float('inf')))
     last=c.execute("SELECT * FROM search_runs WHERE kind IN ('manual','scheduled','recovery') AND completed<? ORDER BY completed DESC LIMIT 1",(end.isoformat(),)).fetchone()
     sources=json.loads(last['sources']) if last else [{'source':'monitor','state':'UNAVAILABLE','error':'No completed checks before summary'}]
@@ -398,7 +412,7 @@ def backup(c):
 
 def status(c):
     matches=[json.loads(r[0]) for r in c.execute('SELECT current_json FROM listings')]
-    return dict(database_health=c.execute('PRAGMA quick_check').fetchone()[0],next_scheduled=next_run().isoformat(),last_scheduled=dict(r) if (r:=c.execute("SELECT id,started,completed,outcome,slot FROM search_runs WHERE kind='scheduled' ORDER BY started DESC LIMIT 1").fetchone()) else None,last_run=dict(r) if (r:=c.execute('SELECT id,started,completed,outcome FROM search_runs ORDER BY started DESC LIMIT 1').fetchone()) else None,sources=[dict(r) for r in c.execute('SELECT * FROM source_health')],last_telegram_report=dict(r) if (r:=c.execute("SELECT id FROM outbox WHERE state='DELIVERED' ORDER BY rowid DESC LIMIT 1").fetchone()) else None,outbox=[dict(r) for r in c.execute('SELECT id,state,attempts,error FROM outbox WHERE state="PENDING"')],notification_mode=os.getenv('NOTIFY_MODE','deals_and_daily'),telegram_enabled=envbool('ENABLE_TELEGRAM'),next_daily_report=next_daily_report().isoformat(),confirmed_deals=sum(confirmed(r) for r in matches),unverified_candidates=sum(r['classification']!='REJECTED' and not confirmed(r) and r['availability'] not in DEAD for r in matches),monitoring=not (ROOT/'disabled').exists(),heartbeat=(ROOT/'heartbeat').read_text() if (ROOT/'heartbeat').exists() else None)
+    return dict(database_health=c.execute('PRAGMA quick_check').fetchone()[0],next_scheduled=next_run().isoformat(),last_scheduled=dict(r) if (r:=c.execute("SELECT id,started,completed,outcome,slot FROM search_runs WHERE kind='scheduled' ORDER BY started DESC LIMIT 1").fetchone()) else None,last_run=dict(r) if (r:=c.execute('SELECT id,started,completed,outcome FROM search_runs ORDER BY started DESC LIMIT 1').fetchone()) else None,sources=[dict(r) for r in c.execute('SELECT * FROM source_health')],last_telegram_report=dict(r) if (r:=c.execute("SELECT id FROM outbox WHERE state='DELIVERED' ORDER BY rowid DESC LIMIT 1").fetchone()) else None,outbox=[dict(r) for r in c.execute('SELECT id,state,attempts,error FROM outbox WHERE state="PENDING"')],notification_mode=os.getenv('NOTIFY_MODE','deals_and_daily'),telegram_enabled=envbool('ENABLE_TELEGRAM'),next_daily_report=next_daily_report().isoformat(),confirmed_deals=sum(confirmed(r) for r in matches),unverified_candidates=sum(in_buyer_scope(r) and r['classification']!='REJECTED' and not confirmed(r) and r['availability'] not in DEAD for r in matches),monitoring=not (ROOT/'disabled').exists(),heartbeat=(ROOT/'heartbeat').read_text() if (ROOT/'heartbeat').exists() else None)
 
 def recover_hourly_gap(c,cursor,at):
     if os.getenv('SCHEDULE','hourly').lower() not in ('hourly','half_hourly'): return cursor
@@ -475,7 +489,7 @@ def main():
     elif args.command=='status': print(json.dumps(status(c),indent=2))
     elif args.command=='matches':
         matches=[json.loads(r[0]) for r in c.execute('SELECT current_json FROM listings')]
-        matches=[r for r in matches if r['classification']!='REJECTED' and r['availability'] not in DEAD]
+        matches=[r for r in matches if in_buyer_scope(r) and r['classification']!='REJECTED' and r['availability'] not in DEAD]
         matches.sort(key=lambda r:(not confirmed(r),not r['cost_complete'],r['delivered_eur'] if r['delivered_eur'] is not None else float('inf')))
         print(json.dumps(matches,indent=2))
     elif args.command=='reports':
