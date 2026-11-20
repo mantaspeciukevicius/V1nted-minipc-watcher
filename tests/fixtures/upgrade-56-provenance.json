@@ -1,0 +1,12 @@
+{
+  "skelbiu-search-expanded.html": {
+    "source": "Captured public Skelbiu N100 search HTML",
+    "url": "https://www.skelbiu.lt/paieska/n100/",
+    "transformation": "Only captured standard-list-item anchor markup retained; not synthetic"
+  },
+  "vinted-cards-captured.json": {
+    "source": "Vinted.lt N97 rendered public search cards captured 2026-11-20T15:00:04Z",
+    "transformation": "Unmodified rendered card extraction; not a full HTML page"
+  },
+  "test_upgrade_56.py": "Other listing scenarios are synthetic; never sent to Telegram"
+}

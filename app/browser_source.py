@@ -39,7 +39,11 @@ def price_from_text(text):
 
 def candidate_hint(title):
     t=title.lower()
+    from cpu_policy import parse
+    cpu,_,_=parse(title)
     if re.search(r'\b(laptop|notebook|ideapad|gemibook|chromebook|macbook|vivobook|thinkpad|ideapad|aspire|latitude|elitebook|probook|netbook|portable|nokia|oneplus|smartfon|smartphone|nolan|helmet|kask|buty|quechua|bluesound|gps|charger|ladegerät|chargeur)\b',t): return False
+    if re.search(r'\b(ram module|sodimm|motininė|motherboard|tv box|korpusas|docking|stotelė)\b',t): return False
+    if cpu and re.search(r'\b(mini|nuc|tiny|micro)\b',t): return True
     if re.search(r'\b(beelink|gmktec|acemagic|minisforum|trigkey|nipogi|firebat|bmax|morefine|topton|kingnovy|larkbox|nucbox)\b',t): return True
     if re.search(r'(?:samsung\s+n150|lenovo\s+3000)',t): return False
     if re.search(r'\bmini[ -]?(pc|computer|komputer|rechner|ordinateur)\b',t): return True
@@ -58,11 +62,14 @@ def availability(text,buy_enabled=False):
         if any(re.match(pattern,line.strip(),re.I) for line in text.splitlines()): return state
     return 'AVAILABLE_CONFIRMED' if buy_enabled else 'UNKNOWN'
 
+def empty_search(text):
+    return bool(re.search(r'no (?:items|results) found|nerasta (?:prekių|rezultatų)|prekių nerasta|nieko neradome|brak wyników|nie znaleziono',text,re.I))
+
 def source_config(path):
     defaults={'markets':['lt'],'queries':['N100','N97','N150'],'max_details':12,'pause_seconds':3,'run_timeout_seconds':480}
     if path.exists(): defaults.update(json.loads(path.read_text()))
-    if os.getenv('BUYER_MARKET'): defaults['markets']=[os.environ['BUYER_MARKET'].lower()]
     if not defaults['markets'] or any(m not in MARKETS for m in defaults['markets']): raise ValueError('Unsupported browser market')
+    if os.getenv('BUYER_MARKET'): defaults['markets']=[os.environ['BUYER_MARKET'].lower()]
     if not 1<=len(defaults['queries'])<=12: raise ValueError('Use 1–12 browser queries')
     if not 0<=int(defaults['max_details'])<=30: raise ValueError('max_details must be between 0 and 30')
     defaults['pause_seconds']=max(2,float(defaults['pause_seconds']))
@@ -88,16 +95,22 @@ def display():
         except subprocess.TimeoutExpired: proc.kill(); proc.wait()
 
 def collect(root,normalize,c,config_dir=Path('/config')):
-    statuses=[]; records=[]
+    statuses=[]; records={}; raws={}
     authorization=config_dir/'direct-authorization.json'
     if not authorization.exists(): return [],[{'source':'authorized_browser','state':'UNAVAILABLE','error':'Explicit authorization record missing'}]
+    from detail_policy import previous, plan, mark_attempt
+    tracked=previous(c,'vinted') if c is not None else {}
     cfg=source_config(config_dir/'browser.json')
+    from cpu_policy import policies
+    from search_quality import choose_terms
+    rotating=cfg.get('rotating_queries',['mini PC','Beelink','GMKtec','Minisforum']+[cpu for cpu in policies() if cpu not in cfg['queries']])
     gate=root/'browser-access-paused.json'
     if gate.exists(): return [],[{'source':'authorized_browser','state':'ACCESS_BLOCKED','error':'Browser paused after access challenge; inspect browser-evidence and use browser-resume after resolving authorization/access'}]
+    cfg['queries']=list(dict.fromkeys(cfg['queries']+choose_terms(c,'vinted',rotating,1,cfg,'vinted_rotation')))
     from playwright.sync_api import sync_playwright
     stamp=datetime.now(timezone.utc).strftime('%Y%m%dT%H%M%S')
     evidence=root/'browser-evidence'/stamp; evidence.mkdir(parents=True,exist_ok=True)
-    started=time.monotonic(); seen=set(); detail_count=0
+    started=time.monotonic(); seen=set(); detail_count=0; active_search_term=None; query_tick=started
     def save(page,name,text):
         (evidence/(name+'.txt')).write_text(text)
         try:
@@ -146,32 +159,23 @@ def collect(root,normalize,c,config_dir=Path('/config')):
         browser=p.chromium.launch(headless=False,executable_path=__import__('os').getenv('BROWSER_EXECUTABLE'))
         page=browser.new_page()
         try:
-            # Recheck previously eligible candidates even when absent from search.
-            # Share the existing detail/time budget; never infer sold from absence.
-            tracked=[json.loads(row[0]) for row in c.execute('SELECT current_json FROM listings ORDER BY last_seen ASC')]
-            for record in tracked:
-                if record['classification']=='REJECTED' or record['availability'] in {'SOLD','RESERVED','PURCHASE_IN_PROGRESS','REMOVED'}: continue
-                if not record['source'].startswith('authorized_browser'): continue
-                if os.getenv('BUYER_MARKET') and (urlsplit(record['url']).hostname or '').removeprefix('www.')!='vinted.'+os.environ['BUYER_MARKET'].lower(): continue
-                if detail_count>=cfg['max_details'] or time.monotonic()-started>cfg['run_timeout_seconds']: break
-                time.sleep(cfg['pause_seconds']); detail_count+=1
-                text=navigate(page,record['url'],'item-'+record['id'].split(':')[1])
-                if text is None: return records,statuses
-                raw={'url':record['url'],'title':record['title'],'country':record['country'],'currency':record['currency'],'price':None}
-                detail=read_detail(page,raw,record,text)
-                records.append(detail); seen.add(record['id'].split(':')[1])
-                statuses.append({'source':'authorized_browser_recheck','state':'AUTHORIZED_BROWSER_CHECK','count':1,'query':record['url'],'evidence':str(evidence)})
             for market in cfg['markets']:
                 for query in cfg['queries']:
+                    active_search_term=query;query_tick=time.monotonic();query_ids=set();query_raw_ids=set();duplicate_count=0
                     if time.monotonic()-started>cfg['run_timeout_seconds']:
-                        statuses.append({'source':'authorized_browser','state':'PARTIAL_CHECK','error':'Bounded run time exhausted'}); return records,statuses
+                        statuses.append({'source':'authorized_browser','state':'PARTIAL_CHECK','error':'Bounded run time exhausted'}); return list(records.values()),statuses
                     url='https://www.vinted.'+market+'/catalog?'+urlencode({'search_text':query,'order':'newest_first'})
                     text=navigate(page,url,market+'-'+re.sub(r'\W','_',query))
-                    if text is None: return records,statuses
+                    if text is None:
+                        statuses[-1].update(marketplace='vinted',search_term=query,duration_seconds=round(time.monotonic()-query_tick,3))
+                        return list(records.values()),statuses
                     # Dismiss only an ordinary cookie-consent dialog if present.
                     for label in ('Reject all','Reject optional cookies','Atmesti visus','Tik būtini slapukai','Palikti būtinuosius','Pasirinkti būtinuosius','Nur notwendige Cookies','Tout refuser','Odrzuć wszystkie'):
                         button=page.get_by_role('button',name=label,exact=True)
-                        if button.count() and button.first.is_visible(): button.first.click(timeout=3000); break
+                        if button.count() and button.first.is_visible():
+                            try: button.first.click(timeout=3000)
+                            except Exception: pass  # Consent UI may be obscured; rendered cards remain readable.
+                            break
                     page.wait_for_timeout(1000)
                     cards=page.locator('a[href*="/items/"][data-testid$="--overlay-link"]').evaluate_all("""els=>els.map(e=>{const card=e.closest('[data-testid^="product-item-id-"][class*="new-item-box__container"]'); return {url:e.href,title:e.getAttribute('title')||e.getAttribute('aria-label')||e.innerText,price:card?.querySelector('[data-testid$="--price-text"]')?.innerText||'',card:card?.innerText||''};})""")
                     (evidence/(market+'-'+re.sub(r'\W','_',query)+'-cards.json')).write_text(json.dumps(cards,ensure_ascii=False,indent=2))
@@ -180,7 +184,11 @@ def collect(root,normalize,c,config_dir=Path('/config')):
                         u=urlsplit(card['url'])
                         if u.hostname not in ('www.vinted.'+market,'vinted.'+market) or not re.match(r'/items/\d+',u.path): continue
                         ident=re.match(r'/items/(\d+)',u.path)[1]
-                        if ident in seen: continue
+                        query_raw_ids.add(ident)
+                        if ident in seen:
+                            duplicate_count+=1
+                            if 'vinted:'+ident in records: query_ids.add('vinted:'+ident)
+                            continue
                         seen.add(ident)
                         price,currency=price_from_text(card['price'])
                         title=re.split(r', (?:Brand|Prekių ženklas|Prekės ženklas|Marke|Marque|Marka|Merk|Marca):',card['title'])[0]
@@ -188,19 +196,25 @@ def collect(root,normalize,c,config_dir=Path('/config')):
                         raw={'url':card['url'],'title':title,'country':market.upper(),'price':price,'currency':currency or 'EUR','description':'','evidence_source':url+' (public rendered search card)'}
                         try: record=normalize(c,raw,'authorized_browser_card')
                         except ValueError: continue
-                        records.append(record); valid.append((raw,record))
-                    status='AUTHORIZED_BROWSER_CHECK' if cards else 'NO_USABLE_RESULTS'
-                    statuses.append({'source':'authorized_browser','query':url,'state':status,'count':len(valid),'coverage':'First newest-first results page only; market connectivity not established','evidence':str(evidence)})
-                    for raw,record in valid:
-                        if detail_count>=cfg['max_details'] or time.monotonic()-started>cfg['run_timeout_seconds']: break
-                        if record['classification']=='REJECTED': continue
-                        time.sleep(cfg['pause_seconds']); detail_count+=1
-                        text=navigate(page,raw['url'],'item-'+record['id'].split(':')[1])
-                        if text is None: return records,statuses
-                        detail=read_detail(page,raw,record,text)
-                        records[records.index(record)]=detail
+                        records[record['id']]=record; raws[record['id']]=raw; valid.append((raw,record));query_ids.add(record['id'])
+                    status='AUTHORIZED_BROWSER_CHECK' if cards else 'NO_USABLE_RESULTS' if empty_search(text) else 'PARSING_FAILURE'
+                    statuses.append({'source':'authorized_browser','query':url,'state':status,'count':len(valid),'marketplace':'vinted','search_term':query,'raw_count':len(query_raw_ids),'duplicate_count':duplicate_count,'listing_ids':sorted(query_ids),'duration_seconds':round(time.monotonic()-query_tick,3),'coverage':'First newest-first results page only; market connectivity not established','evidence':str(evidence)})
                     time.sleep(cfg['pause_seconds'])
+            active_search_term=None
+            if os.getenv('BUYER_MARKET'):
+                tracked={k:r for k,r in tracked.items() if (urlsplit(r['url']).hostname or '').removeprefix('www.')=='vinted.'+os.environ['BUYER_MARKET'].lower()}
+            selected,metrics=plan(c,records,tracked,cfg)
+            for record in selected:
+                if time.monotonic()-started>cfg['run_timeout_seconds']:
+                    statuses.append({'source':'authorized_browser','state':'PARTIAL_CHECK','error':'Detail time budget exhausted'});break
+                mark_attempt(c,record);time.sleep(cfg['pause_seconds']);detail_count+=1
+                text=navigate(page,record['url'],'item-'+record['id'].split(':')[1])
+                if text is None: return list(records.values()),statuses
+                raw=raws.get(record['id'],{'url':record['url'],'title':record['title'],'country':record['country'],'currency':record['currency'],'price':None})
+                records[record['id']]=read_detail(page,raw,record,text)
+            if statuses: statuses[-1].update(detail_plan=metrics,details_attempted=detail_count)
         except Exception as e:
             statuses.append({'source':'authorized_browser','state':'SEARCH_PROVIDER_FAILURE','error':type(e).__name__+': '+str(e)[:160]})
+            if active_search_term: statuses[-1].update(marketplace='vinted',search_term=active_search_term,duration_seconds=round(time.monotonic()-query_tick,3))
         finally: browser.close()
-    return records,statuses
+    return list(records.values()),statuses

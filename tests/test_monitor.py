@@ -8,7 +8,7 @@ import monitor as m
 class MonitorTests(unittest.TestCase):
     def setUp(self):
         self.tmp=tempfile.TemporaryDirectory(); self.root=Path(self.tmp.name)
-        self.env=patch.dict(os.environ,{'SCHEDULE':'02:00,11:00,16:00,23:00','NOTIFY_MODE':'every_check','DATABASE_PATH':str(self.root/'db.sqlite'),'ENABLE_TELEGRAM':'false','ENABLE_AUTHORIZED_DIRECT_CHECKS':'false','BACKUP_DIR':str(self.root/'backups')})
+        self.env=patch.dict(os.environ,{'BUYER_MARKET':'','SCHEDULE':'02:00,11:00,16:00,23:00','NOTIFY_MODE':'every_check','DATABASE_PATH':str(self.root/'db.sqlite'),'ENABLE_TELEGRAM':'false','ENABLE_AUTHORIZED_DIRECT_CHECKS':'false','BACKUP_DIR':str(self.root/'backups')})
         self.env.start(); self.old=m.ROOT; m.ROOT=self.root
         (self.root/'inbox').mkdir(); self.c=m.db()
     def tearDown(self):
@@ -81,7 +81,7 @@ class MonitorTests(unittest.TestCase):
     def test_old_observation(self):
         m.observe(self.c,self.row(),'1'); r=self.row(price=50,observed_at=(datetime.now(timezone.utc)-timedelta(days=1)).isoformat()); self.assertEqual(m.observe(self.c,r,'2')[0],'NO_CHANGE')
     def test_ram_max_suffix(self): self.assertIsNone(m.specs('N100 16GB maximum')[1])
-    def test_over_budget(self): self.assertEqual(self.row(price=200)['classification'],'REJECTED')
+    def test_over_budget(self): self.assertEqual(self.row(price=200)['deal_state'],'ABOVE_HARD_LIMIT')
     def test_accessory(self): self.assertEqual(self.row(title='N100 charger',description='For mini PC 16 GB')['classification'],'REJECTED')
     def test_negative_price(self):
         with self.assertRaises(ValueError): self.row(price=-1)

@@ -1,0 +1,16 @@
+{
+  "enabled": true,
+  "frequent_queries": [
+    "n100"
+  ],
+  "max_details": 5,
+  "pause_seconds": 3,
+  "run_timeout_seconds": 150,
+  "above_target_recheck_hours": 6,
+  "candidate_recheck_hours": 2,
+  "max_rechecks": 2,
+  "max_above_target_details": 1,
+  "adaptive_search": true,
+  "adaptive_every": 4,
+  "adaptive_min_successes": 3
+}

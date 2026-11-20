@@ -9,5 +9,12 @@
   ],
   "max_details": 12,
   "pause_seconds": 3,
-  "run_timeout_seconds": 480
+  "run_timeout_seconds": 300,
+  "above_target_recheck_hours": 6,
+  "candidate_recheck_hours": 2,
+  "max_rechecks": 3,
+  "max_above_target_details": 1,
+  "adaptive_search": true,
+  "adaptive_every": 4,
+  "adaptive_min_successes": 3
 }
