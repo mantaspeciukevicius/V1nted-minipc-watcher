@@ -114,26 +114,39 @@ def collect(root,normalize,c,config_dir=Path('/config')):
     def save(page,name,text):
         (evidence/(name+'.txt')).write_text(text)
         try:
-            if name.startswith('item-') and page.locator('h1').count(): page.locator('h1').first.scroll_into_view_if_needed(timeout=3000)
-            page.screenshot(path=str(evidence/(name+'.png')),full_page=False,timeout=10000)
+            if name.startswith('item-') and page.locator('h1').count(): page.locator('h1').first.scroll_into_view_if_needed(timeout=remaining_ms(deadline,3000))
+            page.screenshot(path=str(evidence/(name+'.png')),full_page=False,timeout=remaining_ms(deadline,10000))
         except Exception: pass
-    def navigate(page,url,name):
-        response=page.goto(url,wait_until='domcontentloaded',timeout=40000)
-        page.wait_for_timeout(2500)
-        text=page.locator('body').inner_text(timeout=10000)
-        status=response.status if response else None
-        problem=access_problem(status,text,page.url)
-        # A visible CAPTCHA frame is a stop signal; never interact with it.
-        if not problem:
+    from recovery import fetch,settings as recovery_settings,remaining_ms,RunBudgetExceeded
+    recovery_cfg=recovery_settings(config_dir);deadline=started+cfg['run_timeout_seconds'];retry_events=[];successful_details=[];active_url=None
+    def restart_browser():
+        nonlocal browser,page
+        try: browser.close()
+        except Exception: pass
+        browser=p.chromium.launch(headless=False,executable_path=os.getenv('BROWSER_EXECUTABLE'));page=browser.new_page()
+    def navigate(_page,url,name):
+        nonlocal active_url
+        active_url=url
+        def operation():
+            response=page.goto(url,wait_until='domcontentloaded',timeout=remaining_ms(deadline,40000))
+            http_problem=access_problem(response.status if response else None,'',page.url)
+            if http_problem in {'ACCESS_BLOCKED','RATE_LIMIT','LOGIN_REQUIRED','SOURCE_UNAVAILABLE'}:return {'problem':http_problem,'text':'HTTP access restriction or unavailable response; no listing evidence inferred'}
+            if deadline-time.monotonic()<2.5:raise RunBudgetExceeded('Browser run time budget exhausted')
+            page.wait_for_timeout(2500)
+            text=page.locator('body').inner_text(timeout=remaining_ms(deadline,10000))
+            status=response.status if response else None
+            problem=access_problem(status,text,page.url)
             frames=page.locator('iframe[src*="captcha"], iframe[title*="challenge" i]')
-            if any(frames.nth(i).is_visible() for i in range(frames.count())): problem='ACCESS_BLOCKED'
+            if any(frames.nth(i).is_visible() for i in range(frames.count())):problem='ACCESS_BLOCKED'
+            return {'problem':problem,'text':text}
+        result=fetch(operation,deadline,recovery_cfg,restart_browser,retry_events)
+        text=result['text'];problem=result['problem']
+        save(page,name,text)
         if problem:
-            save(page,name,text)
             if problem in {'ACCESS_BLOCKED','RATE_LIMIT','LOGIN_REQUIRED'}:
                 gate.write_text(json.dumps({'at':stamp,'url':url,'state':problem,'evidence':str(evidence)}))
-            statuses.append({'source':'authorized_browser','query':url,'state':problem,'error':'Stopped at HTTP/access failure; no bypass attempted'})
+            statuses.append({'source':'authorized_browser','query':url,'state':problem,'error':'HTTP/access failure after permitted recovery; no bypass attempted'})
             return None
-        save(page,name,text)
         return text
     def read_detail(page,raw,record,text):
         h1=page.locator('h1'); title=h1.first.inner_text() if h1.count() else raw['title']
@@ -154,6 +167,7 @@ def collect(root,normalize,c,config_dir=Path('/config')):
         raw.update(title=title,description=description,availability=state,availability_evidence='Rendered enabled purchase button' if buy_enabled else 'Rendered explicit state label',details_confirmed=True,evidence_source=raw['url']+' (rendered listing details)')
         if price is not None: raw.update(price=price,currency=currency)
         detail=normalize(c,raw,'authorized_browser_detail')
+        if detail.get('details_confirmed'): successful_details.append(detail['id'])
         return detail
     with display(), sync_playwright() as p:
         browser=p.chromium.launch(headless=False,executable_path=__import__('os').getenv('BROWSER_EXECUTABLE'))
@@ -214,9 +228,9 @@ def collect(root,normalize,c,config_dir=Path('/config')):
                 records[record['id']]=read_detail(page,raw,record,text)
             if statuses: statuses[-1].update(detail_plan=metrics,details_attempted=detail_count)
         except Exception as e:
-            statuses.append({'source':'authorized_browser','state':'SEARCH_PROVIDER_FAILURE','error':type(e).__name__+': '+str(e)[:160]})
+            statuses.append({'source':'authorized_browser','state':'PARTIAL_CHECK' if isinstance(e,RunBudgetExceeded) else 'SEARCH_PROVIDER_FAILURE','query':active_url,'error':type(e).__name__+': '+str(e)[:160]})
             if active_search_term: statuses[-1].update(marketplace='vinted',search_term=active_search_term,duration_seconds=round(time.monotonic()-query_tick,3))
         finally:
-            if statuses: statuses[-1].update(details_attempted=detail_count)
+            if statuses: statuses[-1].update(details_attempted=detail_count,detail_success_ids=successful_details,navigation_retry_events=retry_events)
             browser.close()
     return list(records.values()),statuses

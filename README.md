@@ -217,3 +217,43 @@ docker exec vinted-minipc-watcher python /app/monitor.py preview-daily --at 2026
 
 Previews use observations before the boundary, not later stored snapshots. Daily
 summaries remain deduplicated; the 19:00 browser check runs afterward.
+
+
+### Bounded failure recovery and lifecycle alerts (2026-11-22)
+
+Both marketplace adapters retry an ordinary public-page navigation once for
+timeouts, recognized temporary network errors or server errors. A crashed/closed
+browser is closed before one replacement is launched. Retries share the original
+marketplace run deadline, with each browser timeout capped by remaining time.
+Selectors, parser errors, 404s, access restrictions and exhausted run budgets are
+not repeatedly retried. A 401/403/429 stops before attempting page extraction;
+CAPTCHA/login/access/rate-limit gates remain paused until operator review. No
+automatic bypass, proxy rotation or account workflow is introduced.
+
+`config/recovery.json` configures `navigation_retries` (0 or 1; hard cap 1),
+`retry_delay_seconds` (default 5; bounded 3–15), and
+`persistent_failure_checks` (default 3; minimum 2). A failing query/detail scope
+is tracked in SQLite `app_settings` (`failure_watch:MARKETPLACE`). After three
+failed checks of that scope, one Telegram incident alert is added to the existing
+outbox. Access restrictions alert immediately because the source is paused.
+Further failures do not repeat the alert. A recovery notification is emitted only
+when all previously pending scopes have actually succeeded: another rotating term
+or a disabled adapter cannot clear the incident. Detail failures need successful
+extraction of the same listing. State and notification insertion commit together
+so crashes cannot silently consume an alert. This state survives container restart.
+
+Successful retry counts and browser restarts are stored in run funnel metrics and
+appear in daily reports when nonzero. Local reports retain full diagnostics;
+Telegram health alerts use safe diagnostic categories and affected scopes.
+`status` includes the persistent `failure_watch` state, including issues that have
+not yet reached the alert threshold. The other marketplace continues independently.
+
+After inspecting saved evidence and resolving authorization/access, manually clear
+only the affected source gate with `python /app/monitor.py browser-resume --source
+vinted` or `--source skelbiu` inside the existing container. Resuming does not itself
+claim recovery; a later successful check must establish it. No recovery notification
+is sent for an isolated transient failure that never triggered an incident alert.
+Existing Telegram retry/part receipts, 12 GB RAM minimum, CPU ceilings, scheduling,
+quiet routine checks and daily summaries remain in effect. Database corruption and
+parser changes require investigation; this feature does not overwrite databases or
+automatically alter parsers to manufacture matches.

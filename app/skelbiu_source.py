@@ -55,19 +55,36 @@ def collect(root,normalize,c,config_dir=Path('/config')):
     from detail_policy import previous, plan, mark_attempt
     tracked=previous(c,'skelbiu')
     records={}; statuses=[]; detail_count=0; visited=set(); active_search_term=None; query_tick=started
-    def navigate(page,url):
-        if time.monotonic()-started>budget: raise TimeoutError('Skelbiu run budget exhausted')
-        time.sleep(pause); response=page.goto(url,wait_until='domcontentloaded',timeout=min(30000,max(1000,int((budget-(time.monotonic()-started))*1000))))
-        page.wait_for_timeout(1500); text=page.locator('body').inner_text(timeout=5000)
-        problem=access_problem(response.status if response else None,text,page.url)
-        frames=page.locator('iframe[src*="captcha"], iframe[title*="challenge" i]')
-        if any(frames.nth(i).is_visible() for i in range(frames.count())): problem='ACCESS_BLOCKED'
-        (evidence/(str(len(visited))+'.txt')).write_text(text); visited.add(url)
+    from recovery import fetch,settings as recovery_settings,remaining_ms,RunBudgetExceeded
+    recovery_cfg=recovery_settings(config_dir);deadline=started+budget;retry_events=[];successful_details=[];active_url=None
+    def restart_browser():
+        nonlocal browser,page
+        try: browser.close()
+        except Exception: pass
+        browser=p.chromium.launch(headless=False,executable_path=__import__('os').getenv('BROWSER_EXECUTABLE'));page=browser.new_page()
+    def navigate(_page,url):
+        nonlocal active_url
+        active_url=url
+        def operation():
+            if deadline-time.monotonic()<pause+2.5:raise RunBudgetExceeded('Skelbiu run time budget exhausted')
+            time.sleep(pause)
+            response=page.goto(url,wait_until='domcontentloaded',timeout=remaining_ms(deadline,30000))
+            http_problem=access_problem(response.status if response else None,'',page.url)
+            if http_problem in {'ACCESS_BLOCKED','RATE_LIMIT','LOGIN_REQUIRED','SOURCE_UNAVAILABLE'}:return {'problem':http_problem,'text':'HTTP access restriction or unavailable response; no listing evidence inferred'}
+            if deadline-time.monotonic()<1.5:raise RunBudgetExceeded('Skelbiu run time budget exhausted')
+            page.wait_for_timeout(1500);text=page.locator('body').inner_text(timeout=remaining_ms(deadline,5000))
+            problem=access_problem(response.status if response else None,text,page.url)
+            frames=page.locator('iframe[src*="captcha"], iframe[title*="challenge" i]')
+            if any(frames.nth(i).is_visible() for i in range(frames.count())):problem='ACCESS_BLOCKED'
+            return {'problem':problem,'text':text}
+        result=fetch(operation,deadline,recovery_cfg,restart_browser,retry_events)
+        text=result['text'];problem=result['problem']
+        (evidence/(str(len(visited))+'.txt')).write_text(text);visited.add(url)
         if problem:
-            if problem in {'ACCESS_BLOCKED','RATE_LIMIT','LOGIN_REQUIRED'}: gate.write_text(json.dumps(dict(url=url,state=problem,evidence=str(evidence))))
-            statuses.append(dict(source='skelbiu',state=problem,query=url,error='Stopped at access restriction')); return None
+            if problem in {'ACCESS_BLOCKED','RATE_LIMIT','LOGIN_REQUIRED'}:gate.write_text(json.dumps(dict(url=url,state=problem,evidence=str(evidence))))
+            statuses.append(dict(source='skelbiu',state=problem,query=url,error='HTTP/access failure after permitted recovery'));return None
         return text
-    def read(page,url):
+    def read(_page,url):
         nonlocal detail_count
         detail_count+=1
         text=navigate(page,url)
@@ -76,7 +93,7 @@ def collect(root,normalize,c,config_dir=Path('/config')):
         if not title.count() or not desc.count():
             statuses.append(dict(source='skelbiu',state='PARSING_FAILURE',query=url,error='Listing title/description missing')); return True
         raw=detail_raw(url,title.first.inner_text(),desc.first.inner_text(),price.first.inner_text() if price.count() else '',loc.first.inner_text() if loc.count() else '',head.first.inner_text() if head.count() else '')
-        records[listing_id(url)]=normalize(c,raw,'skelbiu_detail'); return True
+        records[listing_id(url)]=normalize(c,raw,'skelbiu_detail');successful_details.append(listing_id(url)); return True
     with display(),sync_playwright() as p:
         browser=p.chromium.launch(headless=False,executable_path=__import__('os').getenv('BROWSER_EXECUTABLE')); page=browser.new_page()
         try:
@@ -113,9 +130,9 @@ def collect(root,normalize,c,config_dir=Path('/config')):
                 if not read(page,record['url']): return list(records.values()),statuses
             if statuses: statuses[-1].update(detail_plan=metrics,details_attempted=detail_count)
         except Exception as e:
-            statuses.append(dict(source='skelbiu',state='PARTIAL_CHECK' if isinstance(e,TimeoutError) else 'SEARCH_PROVIDER_FAILURE',error=type(e).__name__,details=detail_count))
+            statuses.append(dict(source='skelbiu',state='PARTIAL_CHECK' if isinstance(e,RunBudgetExceeded) else 'SEARCH_PROVIDER_FAILURE',query=active_url,error=type(e).__name__,details=detail_count))
             if active_search_term: statuses[-1].update(marketplace='skelbiu',search_term=active_search_term,duration_seconds=round(time.monotonic()-query_tick,3))
         finally:
-            if statuses: statuses[-1].update(details_attempted=detail_count)
+            if statuses: statuses[-1].update(details_attempted=detail_count,detail_success_ids=successful_details,navigation_retry_events=retry_events)
             browser.close()
     return list(records.values()),statuses

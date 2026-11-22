@@ -46,7 +46,7 @@ def funnel(statuses,records,at=None):
         rs={r['id']:r for r in records if r['id'].startswith(market+':')};ids={i for s in queries for i in s.get('listing_ids',[])}
         detailed=[r for r in rs.values() if r.get('source') in {'authorized_browser_detail','skelbiu_detail','manual_import'} and r.get('details_confirmed')]
         hardware=[r for r in detailed if useful(r,at)]
-        result[market]={'term_attempts':len(queries),'term_successes':sum(s['state'] in SUCCESS for s in queries),'term_failures':sum(s['state'] in FAILURES for s in queries),'raw_cards':sum(s.get('raw_count',0) for s in queries),'relevant_candidates':len(ids),'duplicate_hits':sum(s.get('duplicate_count',0) for s in queries),'detail_attempts':sum(s.get('details_attempted',0) for s in selected),'detail_successes':len(detailed),'hardware_matches':len(hardware),'within_target':sum(assessment(r.get('cpu'),r.get('asking_eur'),r['classification'])['deal_state']=='WITHIN_CPU_TARGET' for r in hardware)}
+        result[market]={'term_attempts':len(queries),'term_successes':sum(s['state'] in SUCCESS for s in queries),'term_failures':sum(s['state'] in FAILURES for s in queries),'raw_cards':sum(s.get('raw_count',0) for s in queries),'relevant_candidates':len(ids),'duplicate_hits':sum(s.get('duplicate_count',0) for s in queries),'detail_attempts':sum(s.get('details_attempted',0) for s in selected),'detail_successes':len(detailed),'hardware_matches':len(hardware),'navigation_retries':sum(len(s.get('navigation_retry_events',[])) for s in selected),'retry_recoveries':sum(bool(e.get('recovered')) for s in selected for e in s.get('navigation_retry_events',[])),'browser_restarts':sum(e.get('action')=='restart browser' for s in selected for e in s.get('navigation_retry_events',[])),'within_target':sum(assessment(r.get('cpu'),r.get('asking_eur'),r['classification'])['deal_state']=='WITHIN_CPU_TARGET' for r in hardware)}
     return result
 
 def availability_counts(c,start,end):
@@ -98,6 +98,7 @@ def build(c,slot,start,end,runs,matches,alerts,confirmed):
     for market in totals:
         rs=[r for r in matches if r['id'].startswith(market+':')];current[market]=rs;t=totals[market]
         lines.append(f'{market}: searches {t["term_successes"]}/{t["term_attempts"]} successful; cards {t["raw_cards"]}; relevant {len(unique[market])} unique; details {t["detail_successes"]} successful / {t["detail_attempts"]} attempted; hardware matches {t["hardware_matches"]}; within budget {t["within_target"]}.')
+        if t['navigation_retries']:lines.append(f'{market} recovery: {t["navigation_retries"]} bounded retries; {t["retry_recoveries"]} recovered; browser restarts {t["browser_restarts"]}.')
         reasons=collections.Counter(reason(r,at) for r in rs);review[market]=dict(reasons)
         summary=[f'{REASONS[k]} {v}' for k,v in reasons.items() if k!='QUALIFIED']
         if summary:lines.append(market+' review — '+'; '.join(summary)+'.')

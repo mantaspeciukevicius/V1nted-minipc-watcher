@@ -423,13 +423,19 @@ def check(kind='manual',slot=None):
             counts['search_quality_updates']=quality_updates
             from daily_reporting import funnel
             counts['funnel']=funnel(statuses,records)
+            from recovery import update_health,settings as recovery_settings,format_health
+            health_events=update_health(c,statuses,recovery_settings())
+            counts['source_health_events']=health_events
+            lifecycle= format_health(health_events)
+            if lifecycle: body+='\n\n'+lifecycle
             usage_after=resource_snapshot()
             counts['runtime']={'duration_seconds':round(time.monotonic()-tick,3),'cpu_seconds':round((usage_after['cpu_usage_usec']-usage_before['cpu_usage_usec'])/1e6,3) if usage_after['cpu_usage_usec'] is not None and usage_before['cpu_usage_usec'] is not None else None,'memory_after_bytes':usage_after['memory.current'],'container_lifetime_peak_memory_bytes':usage_after['memory.peak'],'pids_after':usage_after['pids.current']}
             counts['marketplaces']={name:{'observations':sum(r['id'].startswith(name+':') for r in records),'new_candidates':sum(r['id'].startswith(name+':') and e.startswith('NEW_') for r,e,p in events)} for name in ('vinted','skelbiu')}
             c.execute('INSERT INTO search_runs VALUES(?,?,?,?,?,?,?,?,?)',(run_id,start,now(),kind,slot,outcome,json.dumps(counts),json.dumps(statuses),body))
             from notifications import notification_body
-            outgoing=notification_body(body,events)
-            c.execute('INSERT INTO outbox(id,body,state) VALUES(?,?,?)',(run_id,outgoing,'PENDING' if should_notify(events) else 'LOCAL_ONLY'))
+            outgoing=notification_body(body,events) if events or not lifecycle or os.getenv('NOTIFY_MODE')=='every_check' else lifecycle
+            if events and lifecycle: outgoing+='\n\n'+lifecycle
+            c.execute('INSERT INTO outbox(id,body,state) VALUES(?,?,?)',(run_id,outgoing,'PENDING' if health_events or should_notify(events) else 'LOCAL_ONLY'))
         for p in files:
             target=ROOT/'processed'/f'{run_id}-{p.name}'; target.parent.mkdir(exist_ok=True); p.rename(target)
         flush(c)
@@ -495,7 +501,7 @@ def watchlist(c,source='all'):
 
 def status(c):
     matches=[json.loads(r[0]) for r in c.execute('SELECT current_json FROM listings')]
-    return dict(watchlist_count=len(watchlist(c)),database_health=c.execute('PRAGMA quick_check').fetchone()[0],next_scheduled=next_run().isoformat(),last_scheduled=dict(r) if (r:=c.execute("SELECT id,started,completed,outcome,slot FROM search_runs WHERE kind='scheduled' ORDER BY started DESC LIMIT 1").fetchone()) else None,last_run=dict(r) if (r:=c.execute('SELECT id,started,completed,outcome FROM search_runs ORDER BY started DESC LIMIT 1').fetchone()) else None,sources=[dict(r) for r in c.execute('SELECT * FROM source_health')],last_telegram_report=dict(r) if (r:=c.execute("SELECT id FROM outbox WHERE state='DELIVERED' ORDER BY rowid DESC LIMIT 1").fetchone()) else None,outbox=[dict(r) for r in c.execute('SELECT id,state,attempts,error FROM outbox WHERE state="PENDING"')],notification_mode=os.getenv('NOTIFY_MODE','deals_and_daily'),telegram_enabled=envbool('ENABLE_TELEGRAM'),next_daily_report=next_daily_report().isoformat(),confirmed_deals=sum(confirmed(r) for r in matches),unverified_candidates=sum(in_buyer_scope(r) and r['classification']!='REJECTED' and not confirmed(r) and r['availability'] not in DEAD for r in matches),monitoring=not (ROOT/'disabled').exists(),heartbeat=(ROOT/'heartbeat').read_text() if (ROOT/'heartbeat').exists() else None)
+    return dict(failure_watch={row[0].split(':',1)[1]:json.loads(row[1]) for row in c.execute("SELECT key,value FROM app_settings WHERE key LIKE 'failure_watch:%'")},watchlist_count=len(watchlist(c)),database_health=c.execute('PRAGMA quick_check').fetchone()[0],next_scheduled=next_run().isoformat(),last_scheduled=dict(r) if (r:=c.execute("SELECT id,started,completed,outcome,slot FROM search_runs WHERE kind='scheduled' ORDER BY started DESC LIMIT 1").fetchone()) else None,last_run=dict(r) if (r:=c.execute('SELECT id,started,completed,outcome FROM search_runs ORDER BY started DESC LIMIT 1').fetchone()) else None,sources=[dict(r) for r in c.execute('SELECT * FROM source_health')],last_telegram_report=dict(r) if (r:=c.execute("SELECT id FROM outbox WHERE state='DELIVERED' ORDER BY rowid DESC LIMIT 1").fetchone()) else None,outbox=[dict(r) for r in c.execute('SELECT id,state,attempts,error FROM outbox WHERE state="PENDING"')],notification_mode=os.getenv('NOTIFY_MODE','deals_and_daily'),telegram_enabled=envbool('ENABLE_TELEGRAM'),next_daily_report=next_daily_report().isoformat(),confirmed_deals=sum(confirmed(r) for r in matches),unverified_candidates=sum(in_buyer_scope(r) and r['classification']!='REJECTED' and not confirmed(r) and r['availability'] not in DEAD for r in matches),monitoring=not (ROOT/'disabled').exists(),heartbeat=(ROOT/'heartbeat').read_text() if (ROOT/'heartbeat').exists() else None)
 
 def recover_hourly_gap(c,cursor,at):
     if os.getenv('SCHEDULE','hourly').lower() not in ('hourly','half_hourly'): return cursor
@@ -591,7 +597,9 @@ def main():
     elif args.command=='retry':
         c.execute("UPDATE outbox SET attempts=0,next_attempt=0 WHERE state='PENDING'"); c.commit(); flush(c)
     elif args.command=='disable': (ROOT/'disabled').touch()
-    elif args.command=='browser-resume': (ROOT/'browser-access-paused.json').unlink(missing_ok=True)
+    elif args.command=='browser-resume':
+        if args.source in {'all','vinted'}: (ROOT/'browser-access-paused.json').unlink(missing_ok=True)
+        if args.source in {'all','skelbiu'}: (ROOT/'skelbiu-access-paused.json').unlink(missing_ok=True)
     elif args.command=='enable': (ROOT/'disabled').unlink(missing_ok=True)
     elif args.command=='health':
         age=(datetime.now(UTC)-datetime.fromisoformat((ROOT/'heartbeat').read_text())).total_seconds()
