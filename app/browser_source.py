@@ -47,7 +47,7 @@ def candidate_hint(title):
     if re.search(r'\b(beelink|gmktec|acemagic|minisforum|trigkey|nipogi|firebat|bmax|morefine|topton|kingnovy|larkbox|nucbox)\b',t): return True
     if re.search(r'(?:samsung\s+n150|lenovo\s+3000)',t): return False
     if re.search(r'\bmini[ -]?(pc|computer|komputer|rechner|ordinateur)\b',t): return True
-    return bool(re.search(r'\bn[ -]?(100|97|150)\b',t) and re.search(r'\b(pc|computer|komputer|rechner|ordinateur|ram|intel|16\s*gb|32\s*gb)\b',t))
+    return bool(re.search(r'\bn[ -]?(100|97|150)\b',t) and re.search(r'\b(pc|computer|komputer|rechner|ordinateur|ram|intel|(?:12|16|20|24|32|48|64|96|128)\s*gb)\b',t))
 
 def listing_section(text,title):
     start=text.find(title)
@@ -216,5 +216,7 @@ def collect(root,normalize,c,config_dir=Path('/config')):
         except Exception as e:
             statuses.append({'source':'authorized_browser','state':'SEARCH_PROVIDER_FAILURE','error':type(e).__name__+': '+str(e)[:160]})
             if active_search_term: statuses[-1].update(marketplace='vinted',search_term=active_search_term,duration_seconds=round(time.monotonic()-query_tick,3))
-        finally: browser.close()
+        finally:
+            if statuses: statuses[-1].update(details_attempted=detail_count)
+            browser.close()
     return list(records.values()),statuses

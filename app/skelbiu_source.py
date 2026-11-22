@@ -115,5 +115,7 @@ def collect(root,normalize,c,config_dir=Path('/config')):
         except Exception as e:
             statuses.append(dict(source='skelbiu',state='PARTIAL_CHECK' if isinstance(e,TimeoutError) else 'SEARCH_PROVIDER_FAILURE',error=type(e).__name__,details=detail_count))
             if active_search_term: statuses[-1].update(marketplace='skelbiu',search_term=active_search_term,duration_seconds=round(time.monotonic()-query_tick,3))
-        finally: browser.close()
+        finally:
+            if statuses: statuses[-1].update(details_attempted=detail_count)
+            browser.close()
     return list(records.values()),statuses

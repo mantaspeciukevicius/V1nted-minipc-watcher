@@ -189,8 +189,8 @@ def rank(r):
     p=r.get('cpu_reference',{})
     return (r.get('deal_state')!='WITHIN_CPU_TARGET',r['availability'] in DEAD,not confirmed(r),-(r.get('below_target_eur') or 0),-(p.get('reference_performance_pct') or 0),r.get('idle_power_w') is None,r.get('idle_power_w') or 0,not r['cost_complete'],r['delivered_eur'] if r['delivered_eur'] is not None else float('inf'))
 
-def confirmed(r):
-    fresh=(datetime.now(UTC)-datetime.fromisoformat(r.get('specs_observed_at') or r['observed_at'])).total_seconds()<int(os.getenv('VERIFICATION_TTL_HOURS','24'))*3600
+def confirmed(r,at=None):
+    fresh=((at or datetime.now(UTC))-datetime.fromisoformat(r.get('specs_observed_at') or r['observed_at'])).total_seconds()<int(os.getenv('VERIFICATION_TTL_HOURS','24'))*3600
     current_policy=assessment(r.get('cpu'),r.get('asking_eur'),r['classification'])
     return in_buyer_scope(r) and fresh and r['classification']=='VERIFIED_MATCH' and r['availability']=='AVAILABLE_CONFIRMED' and current_policy['deal_state']=='WITHIN_CPU_TARGET' and r['delivery'] in {'DIRECT_LT_CONFIRMED','FORWARDER_CONFIRMED'}
 
@@ -421,6 +421,8 @@ def check(kind='manual',slot=None):
             quality_updates=record_run(c,statuses,records,known_ids)
             body,counts,outcome=report(run_id,kind,statuses,records,events)
             counts['search_quality_updates']=quality_updates
+            from daily_reporting import funnel
+            counts['funnel']=funnel(statuses,records)
             usage_after=resource_snapshot()
             counts['runtime']={'duration_seconds':round(time.monotonic()-tick,3),'cpu_seconds':round((usage_after['cpu_usage_usec']-usage_before['cpu_usage_usec'])/1e6,3) if usage_after['cpu_usage_usec'] is not None and usage_before['cpu_usage_usec'] is not None else None,'memory_after_bytes':usage_after['memory.current'],'container_lifetime_peak_memory_bytes':usage_after['memory.peak'],'pids_after':usage_after['pids.current']}
             counts['marketplaces']={name:{'observations':sum(r['id'].startswith(name+':') for r in records),'new_candidates':sum(r['id'].startswith(name+':') and e.startswith('NEW_') for r,e,p in events)} for name in ('vinted','skelbiu')}
@@ -435,9 +437,9 @@ def check(kind='manual',slot=None):
         c.close()
         return {'run_id':run_id,'outcome':outcome}
 
-def daily_summary(c,slot):
+def daily_summary(c,slot,preview=False):
     key='daily-summary:'+slot.isoformat()
-    if c.execute('SELECT 1 FROM search_runs WHERE slot=?',(key,)).fetchone(): return {'state':'ALREADY_COMPLETED'}
+    if not preview and c.execute('SELECT 1 FROM search_runs WHERE slot=?',(key,)).fetchone(): return {'state':'ALREADY_COMPLETED'}
     end=slot.astimezone(UTC)
     previous_date=slot.astimezone(zone()).date()-timedelta(days=1)
     h,m=map(int,os.getenv('DAILY_REPORT_TIME','19:00').split(':'))
@@ -448,28 +450,15 @@ def daily_summary(c,slot):
     new_ids={r['listing_id'] for r in alerts if r['event'] in {'NEW_VERIFIED_MATCH','NEW_UNVERIFIED_CANDIDATE'}}
     drops=sum(r['event']=='PRICE_DROP' for r in alerts)
     display_drops=sum(r['event']=='DISPLAY_PRICE_DECREASE_UNVERIFIED' for r in alerts)
-    matches=[json.loads(r[0]) for r in c.execute('SELECT current_json FROM listings')]
+    # Snapshot at the window boundary, so a late summary/preview cannot count later evidence.
+    matches=[json.loads(r[0]) for r in c.execute("SELECT body FROM (SELECT body,ROW_NUMBER() OVER(PARTITION BY listing_id ORDER BY observed_at DESC,id DESC) AS position FROM listing_observations WHERE observed_at<?) WHERE position=1",(end.isoformat(),))]
     matches=[r for r in matches if (os.getenv('CHECK_SOURCE','all')=='all' or r['id'].startswith(os.environ['CHECK_SOURCE']+':')) and in_buyer_scope(r) and r['classification']!='REJECTED' and r['availability'] not in DEAD]
     matches.sort(key=rank)
-    last=c.execute("SELECT * FROM search_runs WHERE kind IN ('manual','scheduled','recovery') AND completed<? ORDER BY completed DESC LIMIT 1",(end.isoformat(),)).fetchone()
-    sources=json.loads(last['sources']) if last else [{'source':'monitor','state':'UNAVAILABLE','error':'No completed checks before summary'}]
-    marketplace_lines=[]
-    for marketplace in ('vinted','skelbiu'):
-        relevant=lambda x: x.get('source','').startswith('authorized_browser') if marketplace=='vinted' else x.get('source')=='skelbiu'
-        observations=[x for run in runs for x in json.loads(run['sources'] or '[]') if relevant(x)]
-        completed=sum(any(relevant(x) and x['state']=='AUTHORIZED_BROWSER_CHECK' for x in json.loads(run['sources'] or '[]')) for run in runs)
-        failures=sum(x['state'] in {'ACCESS_BLOCKED','PARSING_FAILURE','PARTIAL_CHECK','SEARCH_PROVIDER_FAILURE','RATE_LIMIT','SOURCE_UNAVAILABLE'} for x in observations)
-        current=[x for x in matches if x['id'].startswith(marketplace+':')]
-        marketplace_lines.append(f'{marketplace}: checks completed {completed}; source failures {failures}; new candidates {sum(x.startswith(marketplace+":") for x in new_ids)}; within CPU target {sum(x.get("deal_state")=="WITHIN_CPU_TARGET" for x in current)}; CPU/configuration review {sum(x.get("deal_state") in {"CPU_RESEARCH_REQUIRED","CONFIGURATION_REVIEW"} for x in current)}')
-    changes=c.execute('SELECT count(*) FROM availability_history WHERE observed_at>=? AND observed_at<?',(start.isoformat(),end.isoformat())).fetchone()[0]
-    from search_quality import summary as quality_summary
-    marketplace_lines.extend(quality_summary(c))
-    marketplace_lines.append(f'Availability observations/transitions: {changes}; delivery and idle power remain unknown without direct evidence.')
+    sources=json.loads(runs[-1]['sources'] or '[]') if runs else []
+    from daily_reporting import build
+    body,counts,outcome=build(c,slot,start,end,runs,matches,alerts,lambda r:confirmed(r,at=end))
+    if preview: return {'body':body,'counts':counts,'outcome':outcome}
     run_id=str(uuid.uuid4())
-    # A daily status report must not resend already alerted or stale listing details.
-    events=[]
-    details,counts,outcome=report(run_id,'daily_summary',sources,matches,events)
-    body='\n'.join([f'DAILY MINI PC REPORT — {slot.astimezone(zone()).isoformat(timespec="minutes")}',f'Window: {start.astimezone(zone()).isoformat()} to {slot.isoformat()}',f'Checks completed: {len(runs)}; partial/failed: {sum(r["outcome"]=="PARTIAL_CHECK" for r in runs)}',f'New candidates: {len(new_ids)}; confirmed seller price drops: {drops}; unverified displayed-price decreases: {display_drops}',*marketplace_lines,f'Current stored candidates: {len(matches)}; fully confirmed: {sum(confirmed(r) for r in matches)}','Stored candidate counts may be stale; unchanged listings are not sent again.','This summary uses completed checks before 19:00; the 19:00 check runs afterward.','',details])
     stamp=now()
     with c:
         c.execute('INSERT INTO search_runs VALUES(?,?,?,?,?,?,?,?,?)',(run_id,stamp,stamp,'daily_summary',key,outcome,json.dumps(counts),json.dumps(sources),body))
@@ -497,7 +486,7 @@ def watchlist(c,source='all'):
         if source!='all' and market!=source: continue
         policy=assessment(r.get('cpu'),r.get('asking_eur'),r['classification'])
         if policy['deal_state'] not in {'ABOVE_CPU_TARGET','ABOVE_HARD_LIMIT'} or r['availability'] in DEAD: continue
-        if r.get('ram_gb') is None or r['ram_gb']<16 or r['classification'] not in {'VERIFIED_MATCH','LIKELY_MATCH_UNVERIFIED'}: continue
+        if r.get('ram_gb') is None or r['ram_gb']<__import__('cpu_policy').minimum_ram() or r['classification'] not in {'VERIFIED_MATCH','LIKELY_MATCH_UNVERIFIED'}: continue
         cfgpath=Path('/config')/('browser.json' if market=='vinted' else 'skelbiu.json')
         cfg=json.loads(cfgpath.read_text()) if cfgpath.exists() else {}
         last=last_attempt(c,r)
@@ -568,7 +557,7 @@ def daemon():
         time.sleep(15)
 
 def main():
-    p=argparse.ArgumentParser(); p.add_argument('command',choices=['daemon','check','status','matches','reports','history','backup','rates','retry','enable','disable','browser-resume','health','watchlist','search-stats']); p.add_argument('--source',choices=['all','vinted','skelbiu'],default='all'); p.add_argument('--id'); p.add_argument('--dry-run',action='store_true'); args=p.parse_args(); os.environ['CHECK_SOURCE']=args.source
+    p=argparse.ArgumentParser(); p.add_argument('command',choices=['daemon','check','status','matches','reports','history','backup','rates','retry','enable','disable','browser-resume','health','watchlist','search-stats','preview-daily']); p.add_argument('--source',choices=['all','vinted','skelbiu'],default='all'); p.add_argument('--id'); p.add_argument('--at',help='Timezone-aware daily preview boundary'); p.add_argument('--dry-run',action='store_true'); args=p.parse_args(); os.environ['CHECK_SOURCE']=args.source
     if args.dry_run:
         if args.command!='check': p.error('--dry-run only applies to check')
         with tempfile.TemporaryDirectory() as tmp:
@@ -587,6 +576,10 @@ def main():
         matches.sort(key=rank)
         print(json.dumps(matches,indent=2))
     elif args.command=='watchlist': print(json.dumps(watchlist(c,args.source),indent=2))
+    elif args.command=='preview-daily':
+        slot=datetime.fromisoformat(args.at) if args.at else datetime.now(zone()).replace(hour=int(os.getenv('DAILY_REPORT_TIME','19:00').split(':')[0]),minute=int(os.getenv('DAILY_REPORT_TIME','19:00').split(':')[1]),second=0,microsecond=0)
+        if slot.tzinfo is None: p.error('--at must include a UTC offset')
+        print(daily_summary(c,slot,preview=True)['body'])
     elif args.command=='search-stats':
         from search_quality import statistics
         print(json.dumps(statistics(c,args.source),indent=2))

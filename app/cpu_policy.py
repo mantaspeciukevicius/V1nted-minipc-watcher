@@ -6,27 +6,39 @@ def policies():
     path=Path(os.getenv('CPU_POLICY_PATH','/config/cpu-policy.json'))
     return json.loads(path.read_text()) if path.exists() else DEFAULTS
 
+def minimum_ram():
+    return int(os.getenv('MIN_RAM_GB','12'))
+
+def cpu_models(text):
+    t=re.sub(r'\b([4-9]\d{3})[ -]+u\b',r'\1u',text.lower())
+    found=set('N'+v for v in re.findall(r'\bn\s*[- ]?(95|97|100|150|200|250|300|305|350|355)\b',t))
+    found.update(v.upper() for v in re.findall(r'\b([4-9]\d{3}u)\b',t))
+    return found
+
 def parse(text):
     from configuration import memory_text, evidence
     flags=evidence(text)
     t=memory_text(text.lower().replace('×','x'))
     t=re.sub(r'\b([4-9]\d{3})[ -]+u\b',r'\1u',t)
-    found=set('N'+v for v in re.findall(r'\bn\s*[- ]?(95|97|100|150|200|250|300|305|350|355)\b',t))
-    found.update(v.upper() for v in re.findall(r'\b([4-9]\d{3}u)\b',t))
+    found=cpu_models(t)
     cpu=next(iter(found)) if len(found)==1 else None
     clean=re.sub(r'(supports?(?:\s+up\s+to)?|up to|max(?:imum)?|maksimali|iki)\s*\d+\s*(?:gb|go|гб|gib)', '',t)
     clean=re.sub(r'\b\d+\s*(?:gb|go|гб|gib)\s*(?:maximum|max\b|supported)', '',clean)
     clean=re.sub(r'(?:max(?:imum)?|maksimali)\s*(?:supported\s*)?(?:ram|memory|atmintis)?\s*[:=]?\s*\d+\s*(?:gb|go|гб|gib)', '',clean)
     incomplete=bool(re.search(r'barebones?|without\s+ram|no\s+ram|be\s+(?:ram|atminties)|ram\s+(?:optional|sold separately)|\d+\s*gb.{0,15}(?:optional|papildomai|atskirai)|(?:optional|upgrade|papildomai).{0,25}\d+\s*gb',t))
+    mixed=re.compile(r'\b(4|8|12|16|24|32)\s*(?:gb|go|гб|gib)\s*\+\s*(4|8|12|16|24|32)\s*(?:gb|go|гб|gib)(?:\s*(?:ram|ddr[345]))?',re.I)
+    mixed_values=[int(m[1])+int(m[2]) for m in mixed.finditer(clean) if not re.match(r'\s*(?:ssd|nvme|emmc|hdd|storage|disk)',clean[m.end():])]
+    if mixed_values: clean=mixed.sub('',clean)
     values=[int(a)*int(b) for a,b in re.findall(r'\b([124])\s*x\s*(\d+)\s*(?:gb|go|гб|gib)',clean)]
+    values += mixed_values
     clean=re.sub(r'\b[124]\s*x\s*\d+\s*(?:gb|go|гб|gib)','',clean)
-    values += [int(v)//1024 for v in re.findall(r'\b(8192|16384|32768|65536)\s*mb\s*(?:ram|ddr[345])',clean)]
-    for m in re.finditer(r'\b(4|8|16|24|32|48|64)\s*(?:gb|go|гб|gib)\b',clean):
-        if not re.match(r'\s*(ssd|emmc|storage|disk|diskas|dysk|flash|rom)',clean[m.end():]) and not re.search(r'(?:ssd|emmc|storage|disk|diskas|dysk|flash|rom)\s*[:=]?\s*$',clean[max(0,m.start()-12):m.start()]): values.append(int(m[1]))
+    values += [int(v)//1024 for v in re.findall(r'\b(4096|6144|8192|12288|16384|20480|24576|32768|40960|49152|65536|98304|131072|262144)\s*mb\s*(?:ram|ddr[345])',clean)]
+    for m in re.finditer(r'\b(2|4|6|8|12|16|20|24|32|36|40|48|64|96|128|192|256)\s*(?:gb|go|гб|gib)\b',clean):
+        if not re.match(r'\s*(ssd|nvme|hdd|emmc|storage|disk|diskas|dysk|flash|rom)',clean[m.end():]) and not re.search(r'(?:ssd|nvme|hdd|emmc|storage|disk|diskas|dysk|flash|rom)\s*[:=]?\s*$',clean[max(0,m.start()-12):m.start()]): values.append(int(m[1]))
     incomplete=incomplete or bool(set(flags)&{'RAM_NOT_INSTALLED','OPTIONAL_CONFIGURATION'})
     ram=values[0] if values and len(set(values))==1 and not incomplete else None
     policy=policies().get(cpu,{})
-    cls='REJECTED' if ram is not None and ram<int(os.getenv('MIN_RAM_GB','16')) else 'LIKELY_MATCH_UNVERIFIED' if cpu and ram and policy.get('status')=='approved' else 'NEEDS_MANUAL_REVIEW'
+    cls='REJECTED' if ram is not None and ram<minimum_ram() else 'LIKELY_MATCH_UNVERIFIED' if cpu and ram and policy.get('status')=='approved' else 'NEEDS_MANUAL_REVIEW'
     if re.search(r'\b(charger|compatible with|power supply|chargeur|ladegerät)\b',t) and not re.search(r'\b(mini\s*(pc|computer)|komputer|ordinateur|rechner)\b',t): cpu=None; cls='NEEDS_MANUAL_REVIEW'
     if set(flags)&{'STORAGE_MISSING','POWER_ADAPTER_MISSING','MULTIPLE_CONFIGURATION_PRICES'} and cls!='REJECTED': cls='NEEDS_MANUAL_REVIEW'
     if 'DEFECTIVE' in flags: cls='REJECTED'

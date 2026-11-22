@@ -16,5 +16,6 @@
   "max_above_target_details": 1,
   "adaptive_search": true,
   "adaptive_every": 4,
-  "adaptive_min_successes": 3
+  "adaptive_min_successes": 3,
+  "low_priority_recheck_hours": 24
 }

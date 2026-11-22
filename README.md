@@ -2,8 +2,8 @@
 
 A small Python and SQLite application for monitoring mini PC candidates, retaining price history and sending Telegram notifications. Designed for an always-on Ubuntu home server with Docker Compose.
 
-- Intel **N100, N97 or N150**, with at least **16 GB installed RAM**.
-- **Hourly checks** in Europe/Vilnius; notifications for new candidates and price-drop events.
+- Vinted.lt and Skelbiu.lt; configured low-power Intel/AMD CPUs with at least **12 GB installed RAM**.
+- **Checks every 30 minutes** in Europe/Vilnius; notifications for new candidates and price-drop events.
 - Quiet hours stay local; one **daily summary at 19:00**.
 - User-supplied JSON/CSV/text, optional licensed Brave Search discovery and explicitly authorized public-browser access.
 - Persistent history, duplicate suppression, notification outbox, backups and integrity checks.
@@ -177,3 +177,43 @@ search page; Vinted fixtures replay captured rendered cards, including unrelated
 N97 results that must not qualify. Constructed edge cases are explicitly synthetic.
 Run `PYTHONPATH=app python3 -m unittest discover -s tests`; live access remains
 separate and may truthfully report restrictions or parser failures.
+
+
+### Daily decisions report and 12 GB minimum (2026-11-22)
+
+The installed RAM minimum is now 12 GB (`MIN_RAM_GB=12` in `.env`; restart the
+service after changing it). CPU-specific price ceilings remain unchanged. Parsing
+recognizes 12 GB, 12288 MB, paired modules and explicit 8 GB + 4 GB configurations.
+Maximum capacities, optional upgrades and SSD/NVMe capacity do not qualify as RAM.
+Older records gain eligibility through fresh detail verification; historical
+observations and alerts are not rewritten.
+
+Daily Telegram reports use only the stated daily window. They show the discovery
+funnel (search attempts, cards across terms, unique relevant IDs, successful
+details/attempts, hardware matches and within-budget observations), exclusive
+primary review reasons, above-budget suitable hardware, fresh/stale evidence and
+initial availability observations separately from actual transitions. Card counts
+may include the same listing across terms; hardware/detail totals are observations,
+not distinct deals. Old run funnels are reconstructed from recorded observations
+and explicitly marked when detail-attempt counters may be incomplete.
+
+Source errors identify affected queries and whether the same query succeeded in a
+later check. Disabled sources and the duplicate technical footer stay out of the
+daily Telegram message. Full per-check diagnostics remain in local reports. Search
+quality statistics from `search-stats` are lifetime measurements, never daily totals.
+
+Known expensive (>150% of the CPU ceiling) or unsupported processors refresh every
+24 hours (`low_priority_recheck_hours` in each marketplace JSON). Near-target
+hardware keeps its configured above-target cooldown; within-budget candidates keep
+the faster normal cooldown. Price threshold crossings retain earlier verification,
+and new discovery keeps its reserved detail slots.
+
+Preview without queuing a notification or recording a report:
+
+```bash
+docker exec vinted-minipc-watcher python /app/monitor.py preview-daily
+docker exec vinted-minipc-watcher python /app/monitor.py preview-daily --at 2026-11-22T19:00:00+02:00
+```
+
+Previews use observations before the boundary, not later stored snapshots. Daily
+summaries remain deduplicated; the 19:00 browser check runs afterward.

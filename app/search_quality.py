@@ -3,7 +3,7 @@
 History is stored in existing app_settings. Access failures are not zero-result searches.
 """
 import json,math,os,re
-from cpu_policy import policies
+from cpu_policy import policies, minimum_ram
 from datetime import datetime,timezone
 
 def key(term): return re.sub(r'\s+',' ',term.strip().casefold())
@@ -46,7 +46,7 @@ def choose_terms(c,market,terms,count,cfg,cursor_key):
     return chosen
 
 def useful(r,at):
-    if not r.get('details_confirmed') or r.get('classification') not in {'VERIFIED_MATCH','LIKELY_MATCH_UNVERIFIED'} or r.get('ram_gb',0) is None or r.get('ram_gb',0)<int(os.getenv('MIN_RAM_GB','16')): return False
+    if not r.get('details_confirmed') or r.get('classification') not in {'VERIFIED_MATCH','LIKELY_MATCH_UNVERIFIED'} or r.get('ram_gb',0) is None or r.get('ram_gb',0)<minimum_ram(): return False
     if policies().get(r.get('cpu'),{}).get('status')!='approved': return False
     if r.get('availability') in {'SOLD','RESERVED','PURCHASE_IN_PROGRESS','REMOVED','ACCESS_BLOCKED'}: return False
     try:
@@ -97,6 +97,6 @@ def summary(c):
         rows=statistics(c,market)
         if not rows: lines.append(f'{market} search yield: collecting measurements');continue
         top=[r for r in rows if r.get('useful_hits',0)>0][:3]
-        if top: lines.append(market+' productive terms: '+', '.join(f'{r["term"]} ({r.get("useful_hits",0)} detail-backed hits)' for r in top))
-        else: lines.append(f'{market} search yield: {sum(r["successes"] for r in rows)} successful term checks; no recent detail-backed matches established')
+        if top: lines.append(market+' lifetime productive terms: '+', '.join(f'{r["term"]} ({r.get("useful_hits",0)} detail-backed hits)' for r in top))
+        else: lines.append(f'{market} search yield: {sum(r["successes"] for r in rows)} successful term checks since tracking began; no detail-backed matches recorded')
     return lines

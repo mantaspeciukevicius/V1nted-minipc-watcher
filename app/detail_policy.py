@@ -1,7 +1,7 @@
 """Shared bounded detail planning and persistent watchlist cooldowns."""
 import json, math
 from datetime import datetime, timezone, timedelta
-from cpu_policy import assessment, parse
+from cpu_policy import assessment, parse, minimum_ram
 DEAD={'SOLD','RESERVED','PURCHASE_IN_PROGRESS','REMOVED'}
 
 def reassess(record):
@@ -62,7 +62,10 @@ def due(c,record,cfg,at=None,card=None):
         successful=detail_stamp and last and datetime.fromisoformat(detail_stamp)>=last
         return last is None or bool(successful) or at-last>=timedelta(hours=1)
     state=assessment(record.get('cpu'),record.get('asking_eur'),record['classification'])['deal_state']
-    hours=cfg.get('above_target_recheck_hours',6) if above_target(record) else cfg.get('candidate_recheck_hours',2)
+    ceiling=assessment(record.get('cpu'),record.get('asking_eur'),record['classification'])['cpu_max_asking_eur']
+    price=record.get('asking_eur')
+    low_priority=ceiling is None or (price is not None and price>ceiling*1.5)
+    hours=cfg.get('low_priority_recheck_hours',24) if low_priority else cfg.get('above_target_recheck_hours',6) if above_target(record) else cfg.get('candidate_recheck_hours',2)
     return last is None or at-last>=timedelta(hours=max(1,float(hours)))
 
 def above_target(record):
@@ -75,8 +78,12 @@ def priority(record,old=None):
     ceiling=policy['cpu_max_asking_eur'];price=record.get('asking_eur')
     ratio=price/ceiling if price is not None and ceiling else float('inf')
     crossing=bool(old and price_crossed(record,old))
-    return (not (crossing or (old and changed_specs(record,old))),hardware['classification']=='REJECTED',ceiling is None,ratio>1,ratio>1.5,
-            hardware.get('ram_gb') is not None and hardware['ram_gb']<16,ratio,record['id'])
+    changed=bool(old and changed_specs(record,old))
+    undersized=hardware.get('ram_gb') is not None and hardware['ram_gb']<minimum_ram()
+    # Within-target candidates first, then near-target hardware; expensive/unknown
+    # systems remain eligible for limited exploration, never dominating refreshes.
+    band=0 if crossing else 1 if ceiling and ratio<=1 and not undersized else 2 if ceiling and ratio<=1.2 and not undersized else 3 if changed else 4 if ceiling and ratio<=1.5 else 5 if not ceiling and price is not None and price<=175 else 6 if ceiling else 7
+    return (band,hardware['classification']=='REJECTED',undersized,ratio,record['id'])
 
 def plan(c,discovered,tracked,cfg,at=None):
     at=at or datetime.now(timezone.utc);limit=int(cfg.get('max_details',5))
