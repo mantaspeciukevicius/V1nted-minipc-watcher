@@ -1,3 +1,5 @@
+> Historical implementation/research record. Current deployment and later changes: [PROJECT.md](PROJECT.md) and [DEPLOYMENT.md](DEPLOYMENT.md). Test totals and publication statements below apply to the original report, not the latest version.
+
 # CPU policy research — 20 November 2026
 
 The original eleven price ceilings and comparison percentages come from the owner. They remain unchanged. Percentages are user estimates, not benchmark measurements. Purchase ceilings are preferences, not market valuations. CPU nominal power never implies computer wall power; every device has unknown idle power until sourced measurements are supplied.
