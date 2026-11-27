@@ -45,6 +45,8 @@ def format_alert(r,event,previous=None,at=None):
     if policy['deal_state']=='WITHIN_CPU_TARGET':
         qualifier='Detail-supported' if r.get('details_confirmed') and not stale else 'Reported'
         lines.append(f'Why flagged: {qualifier} supported CPU and {ram} GB RAM; asking within this CPU’s ceiling.')
+    elif policy['deal_state']=='NEGOTIATION_CANDIDATE':
+        lines.append('Why flagged: NEGOTIATION OPTION — slightly above CPU target; consider offering '+money(policy['cpu_max_asking_eur'])+'. Asking price is not within target.')
     else: lines.append('Why flagged: '+policy['deal_state'].replace('_',' ').lower()+'; verification required.')
     history=[]
     for key,label in [('original_asking_price','First observed'),('lowest_asking_price','Lowest observed')]:
@@ -61,6 +63,7 @@ def format_alert(r,event,previous=None,at=None):
     lines.append(f'Availability: {r.get("availability","UNKNOWN")} | Delivery: {r.get("delivery","UNKNOWN")}')
     if r.get('cost_complete') and r.get('delivered_eur') is not None: lines.append('Delivered estimate: '+money(r['delivered_eur'])+' (recorded components; verify current charges)')
     else: lines.append('Delivered cost: INCOMPLETE — unknown charges are not zero.')
+    if r.get('delivery_notes'): lines.append('Delivery evidence: '+'; '.join(r['delivery_notes']))
     lines.append('Seller location: '+short(r.get('seller_location'),100)+' | Condition: '+short(r.get('condition'),60))
     lines.append('Specs evidence: '+(short(stamp,60)+' — '+age_text(age)+' at alert creation' if stamp else 'detail page not checked'))
     lines.append('Latest observation: '+short(r.get('observed_at'),60))

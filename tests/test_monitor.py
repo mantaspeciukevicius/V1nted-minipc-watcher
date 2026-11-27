@@ -36,7 +36,7 @@ class MonitorTests(unittest.TestCase):
     def test_price_drop(self):
         m.observe(self.c,self.row(),'1'); self.assertEqual(m.observe(self.c,self.row(price=75),'2')[0],'PRICE_DROP')
     def test_price_increase(self):
-        m.observe(self.c,self.row(),'1'); self.assertEqual(m.observe(self.c,self.row(price=125),'2')[0],'PRICE_INCREASE')
+        m.observe(self.c,self.row(),'1'); self.assertEqual(m.observe(self.c,self.row(price=125),'2')[0],'NO_CHANGE')
     def test_fx_only(self):
         r=self.row(); m.observe(self.c,r,'1'); r['asking_eur']=95; self.assertEqual(m.observe(self.c,r,'2')[0],'NO_CHANGE')
     def test_currency_change(self):

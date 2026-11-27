@@ -2,7 +2,7 @@
 
 Personal Vinted.lt and Skelbiu.lt mini PC monitoring on LarkBox, with persistent history and Telegram reports.
 
-**Documentation updated 27 November 2026.** This describes the deployed installation; the GitHub code snapshot predates the latest enhancements. See [DEPLOYMENT.md](DEPLOYMENT.md) before expecting every documented command to work from a fresh clone.
+**Documentation updated 27 November 2026.** The repository now includes the latest deployed source and tests, with safe configuration examples. See [DEPLOYMENT.md](DEPLOYMENT.md) for deployment boundaries and required local setup.
 
 ## Current behavior
 

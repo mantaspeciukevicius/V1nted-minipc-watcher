@@ -93,3 +93,10 @@ class DecisionTests(unittest.TestCase):
         later=self.at+timedelta(hours=1);stamp=later.astimezone(timezone(timedelta(hours=3))).isoformat()
         self.c.execute('insert into availability_history(listing_id,observed_at,state) values(?,?,?)',(r['id'],stamp,'SOLD'))
         counts,_=availability_counts(self.c,self.at-timedelta(seconds=1),later+timedelta(seconds=1));self.assertEqual(counts['transitions'],1)
+
+    def test_negotiation_candidates_visible_in_daily_summary(self):
+        with patch.dict(os.environ,{'NEGOTIATION_MARGIN_PERCENT':'20'}):
+            row=self.row(price=140)
+            body,metrics,outcome=build(self.c,self.at,self.at-timedelta(days=1),self.at,[],[row],[],lambda r:False)
+            self.assertIn('negotiation options 1',body)
+            self.assertIn('within budget 0',body)

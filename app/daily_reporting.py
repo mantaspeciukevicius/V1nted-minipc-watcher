@@ -102,9 +102,9 @@ def build(c,slot,start,end,runs,matches,alerts,confirmed):
         reasons=collections.Counter(reason(r,at) for r in rs);review[market]=dict(reasons)
         summary=[f'{REASONS[k]} {v}' for k,v in reasons.items() if k!='QUALIFIED']
         if summary:lines.append(market+' review — '+'; '.join(summary)+'.')
-        suitable=[r for r in rs if reason(r,at)=='QUALIFIED'];within=[r for r in suitable if assessment(r.get('cpu'),r.get('asking_eur'),r['classification'])['deal_state']=='WITHIN_CPU_TARGET'];above=[r for r in suitable if assessment(r.get('cpu'),r.get('asking_eur'),r['classification'])['deal_state'] in {'ABOVE_CPU_TARGET','ABOVE_HARD_LIMIT'}];watch[market]=len(above)
+        suitable=[r for r in rs if reason(r,at)=='QUALIFIED'];within=[r for r in suitable if assessment(r.get('cpu'),r.get('asking_eur'),r['classification'])['deal_state']=='WITHIN_CPU_TARGET'];above=[r for r in suitable if assessment(r.get('cpu'),r.get('asking_eur'),r['classification'])['deal_state'] in {'ABOVE_CPU_TARGET','ABOVE_HARD_LIMIT'}];watch[market]=len(above);negotiation=[r for r in suitable if assessment(r.get('cpu'),r.get('asking_eur'),r['classification'])['deal_state']=='NEGOTIATION_CANDIDATE']
         all_above=sum(assessment(r.get('cpu'),r.get('asking_eur'),r['classification'])['below_target_eur'] is not None and assessment(r.get('cpu'),r.get('asking_eur'),r['classification'])['below_target_eur']<0 for r in rs)
-        lines.append(f'{market} current: fresh qualifying hardware within budget {len(within)}; suitable above-budget watchlist {len(above)}; above CPU ceiling including unresolved configurations {all_above}.')
+        lines.append(f'{market} current: fresh qualifying hardware within budget {len(within)}; negotiation options {len(negotiation)}; suitable above-budget watchlist {len(above)}; above CPU ceiling including unresolved configurations {all_above}.')
         fresh_candidates+=sum(fresh(r,at) for r in rs)
     lines.append('Cards count across terms; hardware/detail counts are observations, not unique deals. Review reasons are exclusive primary blockers.')
     if legacy:lines.append(f'Historical funnel reconstructed for {legacy} checks; unavailable detail-attempt counters may be incomplete.')

@@ -25,6 +25,22 @@ def access_problem(status,text,url):
     if re.search(r'/(?:login|member/signup|auth)(?:[/?]|$)',url): return 'LOGIN_REQUIRED'
     return None
 
+def missing_listing(status,text,url):
+    """Only explicit missing-item HTTP responses retire a listing, never searches or blocks."""
+    u=urlsplit(url)
+    return (status in {404,410} and u.hostname in {'vinted.lt','www.vinted.lt'}
+            and bool(re.match(r'/items/\d+(?:-|/|$)',u.path))
+            and not BLOCK_TEXT.search(text)
+            and bool(re.search(r'page not found|puslapis nerastas|skelbimas pašalintas|item (?:not found|removed)|listing (?:not found|removed)',text,re.I)))
+
+def removed_record(record,text):
+    result=dict(record)
+    result.update(availability='REMOVED',source='authorized_browser_detail',observed_at=datetime.now(timezone.utc).isoformat(),
+                  evidence_source=record['url']+' (HTTP 404/410 with rendered not-found page)',
+                  availability_evidence='Explicit missing listing HTTP response and page text',
+                  specs_observed_at=record.get('specs_observed_at') or record.get('observed_at'))
+    return result
+
 def price_from_text(text):
     """Read only explicit currency-bearing amounts; ambiguous card totals stay unknown."""
     pattern=r'(?:(€|EUR|PLN|zł|CZK|Kč)\s*(\d[\d\s\u00a0]*(?:[.,]\d{1,2})?)|(\d[\d\s\u00a0]*(?:[.,]\d{1,2})?)\s*(€|EUR|PLN|zł|CZK|Kč))'
@@ -103,7 +119,7 @@ def collect(root,normalize,c,config_dir=Path('/config')):
     cfg=source_config(config_dir/'browser.json')
     from cpu_policy import policies
     from search_quality import choose_terms
-    rotating=cfg.get('rotating_queries',['mini PC','Beelink','GMKtec','Minisforum']+[cpu for cpu in policies() if cpu not in cfg['queries']])
+    rotating=cfg.get('rotating_queries',['mini PC','Beelink','GMKtec','Minisforum','NiPoGi','mini kompiuteris','ACEMAGIC']+[cpu for cpu in policies() if cpu not in cfg['queries']])
     gate=root/'browser-access-paused.json'
     if gate.exists(): return [],[{'source':'authorized_browser','state':'ACCESS_BLOCKED','error':'Browser paused after access challenge; inspect browser-evidence and use browser-resume after resolving authorization/access'}]
     cfg['queries']=list(dict.fromkeys(cfg['queries']+choose_terms(c,'vinted',rotating,1,cfg,'vinted_rotation')))
@@ -118,18 +134,22 @@ def collect(root,normalize,c,config_dir=Path('/config')):
             page.screenshot(path=str(evidence/(name+'.png')),full_page=False,timeout=remaining_ms(deadline,10000))
         except Exception: pass
     from recovery import fetch,settings as recovery_settings,remaining_ms,RunBudgetExceeded
-    recovery_cfg=recovery_settings(config_dir);deadline=started+cfg['run_timeout_seconds'];retry_events=[];successful_details=[];active_url=None
+    recovery_cfg=recovery_settings(config_dir);deadline=started+cfg['run_timeout_seconds'];retry_events=[];successful_details=[];active_url=None;last_missing=False
     def restart_browser():
         nonlocal browser,page
         try: browser.close()
         except Exception: pass
         browser=p.chromium.launch(headless=False,executable_path=os.getenv('BROWSER_EXECUTABLE'));page=browser.new_page()
     def navigate(_page,url,name):
-        nonlocal active_url
-        active_url=url
+        nonlocal active_url,last_missing
+        active_url=url;last_missing=False
         def operation():
             response=page.goto(url,wait_until='domcontentloaded',timeout=remaining_ms(deadline,40000))
             http_problem=access_problem(response.status if response else None,'',page.url)
+            if response and response.status in {404,410}:
+                missing_text=page.locator('body').inner_text(timeout=remaining_ms(deadline,10000))
+                if missing_listing(response.status,missing_text,page.url):
+                    return {'problem':None,'text':missing_text,'listing_missing':True}
             if http_problem in {'ACCESS_BLOCKED','RATE_LIMIT','LOGIN_REQUIRED','SOURCE_UNAVAILABLE'}:return {'problem':http_problem,'text':'HTTP access restriction or unavailable response; no listing evidence inferred'}
             if deadline-time.monotonic()<2.5:raise RunBudgetExceeded('Browser run time budget exhausted')
             page.wait_for_timeout(2500)
@@ -140,7 +160,7 @@ def collect(root,normalize,c,config_dir=Path('/config')):
             if any(frames.nth(i).is_visible() for i in range(frames.count())):problem='ACCESS_BLOCKED'
             return {'problem':problem,'text':text}
         result=fetch(operation,deadline,recovery_cfg,restart_browser,retry_events)
-        text=result['text'];problem=result['problem']
+        text=result['text'];problem=result['problem'];last_missing=result.get('listing_missing',False)
         save(page,name,text)
         if problem:
             if problem in {'ACCESS_BLOCKED','RATE_LIMIT','LOGIN_REQUIRED'}:
@@ -166,7 +186,11 @@ def collect(root,normalize,c,config_dir=Path('/config')):
         state=availability(text,buy_enabled)
         raw.update(title=title,description=description,availability=state,availability_evidence='Rendered enabled purchase button' if buy_enabled else 'Rendered explicit state label',details_confirmed=True,evidence_source=raw['url']+' (rendered listing details)')
         if price is not None: raw.update(price=price,currency=currency)
+        from enhancements import fee_evidence
+        costs,notes=fee_evidence(listing_section(text,title)+'\n'+text.split('Panašios prekės')[0].split('Nario prekės')[0],raw.get('price') if raw.get('currency')=='EUR' else None,raw['url'],datetime.now(timezone.utc).isoformat())
+        raw['costs']=costs
         detail=normalize(c,raw,'authorized_browser_detail')
+        detail['delivery_notes']=notes
         if detail.get('details_confirmed'): successful_details.append(detail['id'])
         return detail
     with display(), sync_playwright() as p:
@@ -192,6 +216,19 @@ def collect(root,normalize,c,config_dir=Path('/config')):
                             break
                     page.wait_for_timeout(1000)
                     cards=page.locator('a[href*="/items/"][data-testid$="--overlay-link"]').evaluate_all("""els=>els.map(e=>{const card=e.closest('[data-testid^="product-item-id-"][class*="new-item-box__container"]'); return {url:e.href,title:e.getAttribute('title')||e.getAttribute('aria-label')||e.innerText,price:card?.querySelector('[data-testid$="--price-text"]')?.innerText||'',card:card?.innerText||''};})""")
+                    from enhancements import page_link
+                    pages_checked=1
+                    if int(cfg.get('max_search_pages',1))>=2 and deadline-time.monotonic()>75:
+                        extra=page_link(page,url)
+                        if extra:
+                            time.sleep(cfg['pause_seconds'])
+                            extra_text=navigate(page,extra,market+'-'+re.sub(r'\W','_',query)+'-page2')
+                            if extra_text is None:
+                                if statuses[-1]['state'] in {'ACCESS_BLOCKED','RATE_LIMIT','LOGIN_REQUIRED'}:return list(records.values()),statuses
+                            else:
+                                first_cards=cards
+                                cards=page.locator('a[href*="/items/"][data-testid$="--overlay-link"]').evaluate_all("""els=>els.map(e=>{const card=e.closest('[data-testid^="product-item-id-"][class*="new-item-box__container"]'); return {url:e.href,title:e.getAttribute('title')||e.getAttribute('aria-label')||e.innerText,price:card?.querySelector('[data-testid$="--price-text"]')?.innerText||'',card:card?.innerText||''};})""")
+                                cards=first_cards+cards;pages_checked=2
                     (evidence/(market+'-'+re.sub(r'\W','_',query)+'-cards.json')).write_text(json.dumps(cards,ensure_ascii=False,indent=2))
                     valid=[]
                     for card in cards:
@@ -212,7 +249,7 @@ def collect(root,normalize,c,config_dir=Path('/config')):
                         except ValueError: continue
                         records[record['id']]=record; raws[record['id']]=raw; valid.append((raw,record));query_ids.add(record['id'])
                     status='AUTHORIZED_BROWSER_CHECK' if cards else 'NO_USABLE_RESULTS' if empty_search(text) else 'PARSING_FAILURE'
-                    statuses.append({'source':'authorized_browser','query':url,'state':status,'count':len(valid),'marketplace':'vinted','search_term':query,'raw_count':len(query_raw_ids),'duplicate_count':duplicate_count,'listing_ids':sorted(query_ids),'duration_seconds':round(time.monotonic()-query_tick,3),'coverage':'First newest-first results page only; market connectivity not established','evidence':str(evidence)})
+                    statuses.append({'source':'authorized_browser','query':url,'state':status,'count':len(valid),'marketplace':'vinted','search_term':query,'raw_count':len(query_raw_ids),'duplicate_count':duplicate_count,'listing_ids':sorted(query_ids),'duration_seconds':round(time.monotonic()-query_tick,3),'pages':pages_checked,'coverage':f'Up to {pages_checked} newest-first result pages; checkout delivery unverified','evidence':str(evidence)})
                     time.sleep(cfg['pause_seconds'])
             active_search_term=None
             if os.getenv('BUYER_MARKET'):
@@ -223,7 +260,13 @@ def collect(root,normalize,c,config_dir=Path('/config')):
                     statuses.append({'source':'authorized_browser','state':'PARTIAL_CHECK','error':'Detail time budget exhausted'});break
                 mark_attempt(c,record);time.sleep(cfg['pause_seconds']);detail_count+=1
                 text=navigate(page,record['url'],'item-'+record['id'].split(':')[1])
-                if text is None: return list(records.values()),statuses
+                if text is None:
+                    if statuses[-1]['state'] in {'ACCESS_BLOCKED','RATE_LIMIT','LOGIN_REQUIRED'}: return list(records.values()),statuses
+                    continue
+                if last_missing:
+                    records[record['id']]=removed_record(record,text)
+                    successful_details.append(record['id'])
+                    continue
                 raw=raws.get(record['id'],{'url':record['url'],'title':record['title'],'country':record['country'],'currency':record['currency'],'price':None})
                 records[record['id']]=read_detail(page,raw,record,text)
             if statuses: statuses[-1].update(detail_plan=metrics,details_attempted=detail_count)

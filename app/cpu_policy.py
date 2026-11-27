@@ -34,7 +34,7 @@ def parse(text):
     clean=re.sub(r'\b[124]\s*x\s*\d+\s*(?:gb|go|гб|gib)','',clean)
     values += [int(v)//1024 for v in re.findall(r'\b(4096|6144|8192|12288|16384|20480|24576|32768|40960|49152|65536|98304|131072|262144)\s*mb\s*(?:ram|ddr[345])',clean)]
     for m in re.finditer(r'\b(2|4|6|8|12|16|20|24|32|36|40|48|64|96|128|192|256)\s*(?:gb|go|гб|gib)\b',clean):
-        if not re.match(r'\s*(ssd|nvme|hdd|emmc|storage|disk|diskas|dysk|flash|rom)',clean[m.end():]) and not re.search(r'(?:ssd|nvme|hdd|emmc|storage|disk|diskas|dysk|flash|rom)\s*[:=]?\s*$',clean[max(0,m.start()-12):m.start()]): values.append(int(m[1]))
+        if not re.match(r'\s*(?:m\.?2\s*)?(ssd|nvme|hdd|emmc|storage|disk|diskas|dysk|flash|rom)',clean[m.end():]) and not re.search(r'(?:ssd|nvme|hdd|emmc|storage|disk|diskas|dysk|flash|rom)\s*[:=]?\s*$',clean[max(0,m.start()-12):m.start()]): values.append(int(m[1]))
     incomplete=incomplete or bool(set(flags)&{'RAM_NOT_INSTALLED','OPTIONAL_CONFIGURATION'})
     ram=values[0] if values and len(set(values))==1 and not incomplete else None
     policy=policies().get(cpu,{})
@@ -52,6 +52,7 @@ def assessment(cpu,amount,classification):
     elif classification=='NEEDS_MANUAL_REVIEW': state='CONFIGURATION_REVIEW'
     elif amount is None: state='PRICE_UNKNOWN'
     elif amount>float(os.getenv('MAX_ASKING_PRICE_EUR','175')): state='ABOVE_HARD_LIMIT'
+    elif ceiling is not None and amount<=ceiling*(1+float(os.getenv('NEGOTIATION_MARGIN_PERCENT','0'))/100) and amount>ceiling: state='NEGOTIATION_CANDIDATE'
     elif amount>ceiling: state='ABOVE_CPU_TARGET'
     else: state='WITHIN_CPU_TARGET'
     return dict(deal_state=state,cpu_max_asking_eur=ceiling,below_target_eur=round(ceiling-amount,2) if ceiling is not None and amount is not None else None,cpu_reference=p)

@@ -34,7 +34,7 @@ def detail_raw(url,title,description,price_text,location='',header=''):
     return raw
 
 def search_plan(cfg,c):
-    terms=cfg.get('rotating_queries',['mini-pc','5600u','5500u','beelink','gmktec','nuc','mini-kompiuteris','n95','n97','n150','5300u','4300u','7330u','7430u','5700u','minisforum','geekom','chuwi','lenovo-tiny','hp-mini','dell-micro','n200','n250','n300','n305','n350','n355','5425u','4500u','4600u','5625u','7520u','7530u','5800u','5825u'])
+    terms=cfg.get('rotating_queries',['mini-pc','nipogi','ni-po-gi','5600u','5500u','beelink','gmktec','nuc','mini-kompiuteris','n95','n97','n150','5300u','4300u','7330u','7430u','5700u','minisforum','geekom','chuwi','lenovo-tiny','hp-mini','dell-micro','n200','n250','n300','n305','n350','n355','5425u','4500u','4600u','5625u','7520u','7530u','5800u','5825u'])
     from search_quality import choose_terms
     frequent=cfg.get('frequent_queries',['n100'])
     terms=[t for t in terms if t.casefold() not in {x.casefold() for x in frequent}]
@@ -107,6 +107,16 @@ def collect(root,normalize,c,config_dir=Path('/config')):
                     statuses[-1].update(marketplace='skelbiu',search_term=term,duration_seconds=round(time.monotonic()-query_tick,3));break
                 from skelbiu_html import search_cards
                 cards=search_cards(page.content())
+                from enhancements import page_link
+                pages_checked=1
+                if int(cfg.get('max_search_pages',1))>=2 and deadline-time.monotonic()>50:
+                    extra=page_link(page,url)
+                    if extra:
+                        time.sleep(pause)
+                        extra_text=navigate(page,extra)
+                        if extra_text is None:
+                            if statuses[-1]['state'] in {'ACCESS_BLOCKED','RATE_LIMIT','LOGIN_REQUIRED'}:break
+                        else:cards+=search_cards(page.content());pages_checked=2
                 (evidence/(term+'.json')).write_text(json.dumps(cards,ensure_ascii=False))
                 if not cards:
                     statuses.append(dict(source='skelbiu',state='NO_USABLE_RESULTS' if empty_search(text) else 'PARSING_FAILURE',query=url,count=0,marketplace='skelbiu',search_term=term,raw_count=0,listing_ids=[],duration_seconds=round(time.monotonic()-query_tick,3))); continue
@@ -120,7 +130,7 @@ def collect(root,normalize,c,config_dir=Path('/config')):
                     if not candidate_hint(card['title']): continue
                     amount,currency=price_from_text(card['price']); raw=dict(url=card['url'],title=card['title'],price=amount,currency=currency or 'EUR')
                     record=normalize(c,raw,'skelbiu_card'); records[ident]=record; count+=1;query_ids.add(ident)
-                statuses.append(dict(source='skelbiu',state='AUTHORIZED_BROWSER_CHECK',query=url,count=count,marketplace='skelbiu',search_term=term,raw_count=len(query_raw_ids),duplicate_count=duplicate_count,listing_ids=sorted(query_ids),duration_seconds=round(time.monotonic()-query_tick,3),pages=1,details=detail_count,evidence=str(evidence),elapsed_seconds=round(time.monotonic()-started,2)))
+                statuses.append(dict(source='skelbiu',state='AUTHORIZED_BROWSER_CHECK',query=url,count=count,marketplace='skelbiu',search_term=term,raw_count=len(query_raw_ids),duplicate_count=duplicate_count,listing_ids=sorted(query_ids),duration_seconds=round(time.monotonic()-query_tick,3),pages=pages_checked,details=detail_count,evidence=str(evidence),elapsed_seconds=round(time.monotonic()-started,2)))
             active_search_term=None
             selected,metrics=plan(c,records,tracked,dict(cfg,max_details=limit))
             for record in selected:

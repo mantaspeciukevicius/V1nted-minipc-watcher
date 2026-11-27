@@ -149,8 +149,8 @@ def normalize(c,r,source):
             valid=part_ts.tzinfo is not None and part_ts<=datetime.now(UTC)+timedelta(minutes=5)
         a=p.get('amount') if valid else None
         v,rate=eur(c,a,p.get('currency','EUR'))
-        components.append(dict(name=key,amount=a,currency=p.get('currency','EUR'),eur=v,source=p.get('source'),timestamp=p.get('timestamp'),status=p.get('status','UNKNOWN'),fx=rate))
-    complete=converted is not None and all(p['eur'] is not None for p in components)
+        components.append(dict(name=key,amount=a,currency=p.get('currency','EUR'),eur=v,source=p.get('source'),timestamp=p.get('timestamp'),status=p.get('status','UNKNOWN'),lower_bound=bool(p.get('lower_bound')),fx=rate))
+    complete=converted is not None and all(p['eur'] is not None and not p.get('lower_bound') for p in components)
     total=round(converted+sum(p['eur'] or 0 for p in components),2) if converted is not None else None
     risks=[]
     if converted is not None and converted<50: risks.append('Unusually low asking price; inspect listing carefully')
@@ -238,7 +238,7 @@ def observe(c,r,run_id):
     event='NO_CHANGE'
     if not prev: event='NEW_VERIFIED_MATCH' if confirmed(r) else 'NEW_UNVERIFIED_CANDIDATE'
     elif confirmed(r) and not confirmed(prev): event='NEW_VERIFIED_MATCH'
-    elif r.get('deal_state')=='WITHIN_CPU_TARGET' and prev['classification'] in {'NEEDS_MANUAL_REVIEW','REJECTED'} and r['classification'] in {'VERIFIED_MATCH','LIKELY_MATCH_UNVERIFIED'}: event='NEW_UNVERIFIED_CANDIDATE'
+    elif r.get('deal_state') in {'WITHIN_CPU_TARGET','NEGOTIATION_CANDIDATE'} and prev['classification'] in {'NEEDS_MANUAL_REVIEW','REJECTED'} and r['classification'] in {'VERIFIED_MATCH','LIKELY_MATCH_UNVERIFIED'}: event='NEW_UNVERIFIED_CANDIDATE'
     elif r['source']==prev['source'] and r['price'] is not None and prev['price'] is not None and r['currency']==prev['currency']:
         if Decimal(r['price'])<Decimal(prev['price']): event='DISPLAY_PRICE_DECREASE_UNVERIFIED' if r.get('price_basis')=='MARKET_DISPLAY' or prev.get('price_basis')=='MARKET_DISPLAY' else 'PRICE_DROP'
         elif Decimal(r['price'])>Decimal(prev['price']): event='PRICE_INCREASE'
@@ -250,7 +250,7 @@ def observe(c,r,run_id):
     if not prev or prev['availability']!=r['availability']: c.execute('INSERT INTO availability_history(listing_id,observed_at,state) VALUES(?,?,?)',(r['id'],r['observed_at'],r['availability']))
     c.execute('INSERT INTO shipping_estimates VALUES(?,?,?)',(r['id'],r['observed_at'],json.dumps(r['costs'])))
     eid=hashlib.sha256((r['id']+digest+event).encode()).hexdigest()
-    eligible=(r.get('deal_state','WITHIN_CPU_TARGET')=='WITHIN_CPU_TARGET' or event=='PRICE_INCREASE') and in_buyer_scope(r) and r['classification']!='REJECTED' and r['availability'] not in DEAD
+    eligible=event!='PRICE_INCREASE' and r.get('deal_state','WITHIN_CPU_TARGET') in {'WITHIN_CPU_TARGET','NEGOTIATION_CANDIDATE'} and in_buyer_scope(r) and r['classification']!='REJECTED' and r['availability'] not in DEAD
     if event!='NO_CHANGE' and eligible:
         c.execute('INSERT OR IGNORE INTO alerts_sent VALUES(?,?,?,?,NULL)',(eid,r['id'],event,run_id))
         return event,prev
@@ -558,12 +558,14 @@ def daemon():
                 print(json.dumps({'backup':backup(c)}),flush=True)
                 try: rates_refresh(c); health(c,'ecb','OK','Rates updated'); c.commit()
                 except Exception as e: health(c,'ecb','FAILED',type(e).__name__); c.commit()
+                from enhancements import cleanup
+                print(json.dumps({'evidence_cleanup':cleanup(ROOT,c)}),flush=True)
                 maintenance=at.date()
         except Exception as e: print(json.dumps({'event':'maintenance_failed','error':type(e).__name__}),flush=True)
         time.sleep(15)
 
 def main():
-    p=argparse.ArgumentParser(); p.add_argument('command',choices=['daemon','check','status','matches','reports','history','backup','rates','retry','enable','disable','browser-resume','health','watchlist','search-stats','preview-daily']); p.add_argument('--source',choices=['all','vinted','skelbiu'],default='all'); p.add_argument('--id'); p.add_argument('--at',help='Timezone-aware daily preview boundary'); p.add_argument('--dry-run',action='store_true'); args=p.parse_args(); os.environ['CHECK_SOURCE']=args.source
+    p=argparse.ArgumentParser(); p.add_argument('command',choices=['daemon','check','status','matches','reports','history','backup','rates','retry','enable','disable','browser-resume','health','verification-template','cleanup','watchlist','search-stats','preview-daily']); p.add_argument('--source',choices=['all','vinted','skelbiu'],default='all'); p.add_argument('--id'); p.add_argument('--at',help='Timezone-aware daily preview boundary'); p.add_argument('--dry-run',action='store_true'); args=p.parse_args(); os.environ['CHECK_SOURCE']=args.source
     if args.dry_run:
         if args.command!='check': p.error('--dry-run only applies to check')
         with tempfile.TemporaryDirectory() as tmp:
@@ -592,6 +594,14 @@ def main():
     elif args.command=='reports':
         for row in c.execute('SELECT report FROM search_runs ORDER BY started DESC LIMIT 5'): print(row[0]+'\n')
     elif args.command=='history': print(json.dumps([dict(r) for r in c.execute('SELECT * FROM price_history WHERE listing_id=? ORDER BY observed_at',(args.id,))],indent=2))
+    elif args.command=='verification-template':
+        from enhancements import verification_template
+        row=c.execute('SELECT current_json FROM listings WHERE id=?',(args.id,)).fetchone()
+        if row is None: p.error('Listing ID not found')
+        print(json.dumps(verification_template(json.loads(row[0])),indent=2,ensure_ascii=False))
+    elif args.command=='cleanup':
+        from enhancements import cleanup
+        print(json.dumps(cleanup(ROOT,c),indent=2))
     elif args.command=='backup': print(backup(c))
     elif args.command=='rates': rates_refresh(c)
     elif args.command=='retry':
